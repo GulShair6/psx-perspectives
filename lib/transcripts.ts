@@ -1,18 +1,149 @@
-import {createHash} from 'node:crypto';
-import {db,now} from './db';
-import {videoId,importSchema} from './validation';
-export type Passage={text:string;start_seconds:number|null};
-export function parseTranscript(text:string):Passage[]{const lines=text.replace(/^\uFEFF/,'').replace(/\r/g,'').split('\n');const output:Passage[]=[];const timed=/\s*-->/.test(text);let timestamp:number|null=null;let block:string[]=[];
- const flush=()=>{const joined=block.join(' ').replace(/<[^>]*>/g,'').trim();if(joined){for(let i=0;i<joined.length;i+=1800)output.push({text:joined.slice(i,i+1800),start_seconds:timestamp});}block=[];};
- for(const line of lines){const match=line.match(/(?:(\d{1,2}):)?(\d{2}):(\d{2})(?:[.,](\d{3}))?\s*-->/);if(match){if(Number(match[2])>59||Number(match[3])>59)throw new Error('Invalid caption timestamp');flush();timestamp=Number(match[1]||0)*3600+Number(match[2])*60+Number(match[3])+Number(match[4]||0)/1000;}else if(!line.trim()){flush();timestamp=null;}else if((!timed||!/^\d+$/.test(line.trim()))&&!/^(WEBVTT|NOTE|Kind:|Language:)/.test(line.trim()))block.push(line.trim());}flush();return output;
+import { createHash } from "node:crypto";
+import { db, now } from "./db";
+import { videoId, importSchema } from "./validation";
+export type Passage = { text: string; start_seconds: number | null };
+export function parseTranscript(text: string): Passage[] {
+  const lines = text
+    .replace(/^\uFEFF/, "")
+    .replace(/\r/g, "")
+    .split("\n");
+  const output: Passage[] = [];
+  const timed = /\s*-->/.test(text);
+  let timestamp: number | null = null;
+  let block: string[] = [];
+  const flush = () => {
+    const joined = block
+      .join(" ")
+      .replace(/<[^>]*>/g, "")
+      .trim();
+    if (joined) {
+      for (let i = 0; i < joined.length; i += 1800)
+        output.push({
+          text: joined.slice(i, i + 1800),
+          start_seconds: timestamp,
+        });
+    }
+    block = [];
+  };
+  for (const line of lines) {
+    const match = line.match(
+      /(?:(\d{1,2}):)?(\d{2}):(\d{2})(?:[.,](\d{3}))?\s*-->/,
+    );
+    if (match) {
+      if (Number(match[2]) > 59 || Number(match[3]) > 59)
+        throw new Error("Invalid caption timestamp");
+      flush();
+      timestamp =
+        Number(match[1] || 0) * 3600 +
+        Number(match[2]) * 60 +
+        Number(match[3]) +
+        Number(match[4] || 0) / 1000;
+    } else if (!line.trim()) {
+      flush();
+      timestamp = null;
+    } else if (
+      (!timed || !/^\d+$/.test(line.trim())) &&
+      !/^(WEBVTT|NOTE|Kind:|Language:)/.test(line.trim())
+    )
+      block.push(line.trim());
+  }
+  flush();
+  return output;
 }
-export function importTranscript(input:unknown){const data=importSchema.parse(input);const id=videoId(data.url);const passages=parseTranscript(data.text);if(!passages.length)throw new Error('Transcript contains no usable passages');const hash=createHash('sha256').update(data.text).digest('hex');
- return db.transaction(()=>{const existing=db.prepare('SELECT content_hash FROM videos WHERE id=?').get(id) as {content_hash:string|null}|undefined;if(existing?.content_hash){if(existing.content_hash!==hash)throw new Error('This video already has a different transcript. Existing reviewed evidence was preserved.');return {id,duplicate:true};}
- if(data.source_id&&!db.prepare('SELECT 1 FROM sources WHERE id=?').get(data.source_id))throw new Error('Unknown source');
- db.prepare(`INSERT INTO videos(id,source_id,title,speaker,published_at,url,language,status,content_hash) VALUES(?,?,?,?,?,?,?,'imported',?) ON CONFLICT(id) DO UPDATE SET source_id=excluded.source_id,title=excluded.title,speaker=excluded.speaker,published_at=excluded.published_at,url=excluded.url,language=excluded.language,status='imported',error=NULL,content_hash=excluded.content_hash`).run(id,data.source_id,data.title,data.speaker,data.published_at,`https://www.youtube.com/watch?v=${id}`,data.language,hash);
- for(const p of passages)db.prepare('INSERT INTO passages(video_id,start_seconds,text) VALUES(?,?,?)').run(id,p.start_seconds,p.text);return {id,duplicate:false};}).immediate();
+export function importTranscript(input: unknown) {
+  const data = importSchema.parse(input);
+  const id = videoId(data.url);
+  const passages = parseTranscript(data.text);
+  if (!passages.length)
+    throw new Error("Transcript contains no usable passages");
+  const hash = createHash("sha256").update(data.text).digest("hex");
+  return db
+    .transaction(() => {
+      const existing = db
+        .prepare("SELECT content_hash FROM videos WHERE id=?")
+        .get(id) as { content_hash: string | null } | undefined;
+      if (existing?.content_hash) {
+        if (existing.content_hash !== hash)
+          throw new Error(
+            "This video already has a different transcript. Existing reviewed evidence was preserved.",
+          );
+        return { id, duplicate: true };
+      }
+      if (
+        data.source_id &&
+        !db.prepare("SELECT 1 FROM sources WHERE id=?").get(data.source_id)
+      )
+        throw new Error("Unknown source");
+      db.prepare(
+        `INSERT INTO videos(id,source_id,title,speaker,published_at,url,language,status,content_hash) VALUES(?,?,?,?,?,?,?,'imported',?) ON CONFLICT(id) DO UPDATE SET source_id=excluded.source_id,title=excluded.title,speaker=excluded.speaker,published_at=excluded.published_at,url=excluded.url,language=excluded.language,status='imported',error=NULL,content_hash=excluded.content_hash`,
+      ).run(
+        id,
+        data.source_id,
+        data.title,
+        data.speaker,
+        data.published_at,
+        `https://www.youtube.com/watch?v=${id}`,
+        data.language,
+        hash,
+      );
+      for (const p of passages)
+        db.prepare(
+          "INSERT INTO passages(video_id,start_seconds,text) VALUES(?,?,?)",
+        ).run(id, p.start_seconds, p.text);
+      return { id, duplicate: false };
+    })
+    .immediate();
 }
-export function recordReview(data:{id:number;symbol:string;speaker:string;stance:string;rationale:string;target:string|null;horizon:string|null;hypothetical:boolean;status:string;evaluate:boolean;expected_symbol:string;expected_stance:string}){
- db.transaction(()=>{const original=db.prepare('SELECT extracted_symbol,extracted_stance FROM opinions WHERE id=?').get(data.id) as {extracted_symbol:string;extracted_stance:string}|undefined;if(!original)throw new Error('Opinion not found');if(data.status==='approved'&&data.hypothetical)throw new Error('Hypothetical commentary cannot be approved as a recommendation');db.prepare('UPDATE opinions SET symbol=?,speaker=?,stance=?,rationale=?,target=?,horizon=?,hypothetical=?,status=?,reviewed_at=? WHERE id=?').run(data.symbol,data.speaker,data.stance,data.rationale,data.target,data.horizon,+data.hypothetical,data.status,now(),data.id);
- if(data.evaluate)db.prepare('INSERT INTO evaluations VALUES(?,?,?) ON CONFLICT(opinion_id) DO UPDATE SET correct=excluded.correct,evaluated_at=excluded.evaluated_at').run(data.id,+(original.extracted_symbol===data.expected_symbol&&original.extracted_stance===data.expected_stance),now());}).immediate();
+export function recordReview(data: {
+  id: number;
+  symbol: string;
+  speaker: string;
+  stance: string;
+  rationale: string;
+  target: string | null;
+  horizon: string | null;
+  hypothetical: boolean;
+  status: string;
+  evaluate: boolean;
+  expected_symbol: string;
+  expected_stance: string;
+}) {
+  db.transaction(() => {
+    const original = db
+      .prepare(
+        "SELECT extracted_symbol,extracted_stance FROM opinions WHERE id=?",
+      )
+      .get(data.id) as
+      { extracted_symbol: string; extracted_stance: string } | undefined;
+    if (!original) throw new Error("Opinion not found");
+    if (data.status === "approved" && data.hypothetical)
+      throw new Error(
+        "Hypothetical commentary cannot be approved as a recommendation",
+      );
+    db.prepare(
+      "UPDATE opinions SET symbol=?,speaker=?,stance=?,rationale=?,target=?,horizon=?,hypothetical=?,status=?,reviewed_at=? WHERE id=?",
+    ).run(
+      data.symbol,
+      data.speaker,
+      data.stance,
+      data.rationale,
+      data.target,
+      data.horizon,
+      +data.hypothetical,
+      data.status,
+      now(),
+      data.id,
+    );
+    if (data.evaluate)
+      db.prepare(
+        "INSERT INTO evaluations VALUES(?,?,?) ON CONFLICT(opinion_id) DO UPDATE SET correct=excluded.correct,evaluated_at=excluded.evaluated_at",
+      ).run(
+        data.id,
+        +(
+          original.extracted_symbol === data.expected_symbol &&
+          original.extracted_stance === data.expected_stance
+        ),
+        now(),
+      );
+  }).immediate();
 }

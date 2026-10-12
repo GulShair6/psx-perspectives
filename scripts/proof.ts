@@ -1,3 +1,45 @@
-import {collectPsx,fetchText,parseFeed} from '../lib/sources';
-import {captions} from '../lib/worker';
-async function main(){const snapshot=await collectPsx('OGDC');console.log('PSX:',JSON.stringify({name:snapshot.name,price:snapshot.price,annualPeriods:snapshot.annual.periods,payouts:snapshot.payouts.length,notes:snapshot.notes}));for(const channel of ['UC1ilKViIpulidQm5UL6mGTQ','UCjL4aKJhoVQNRJK9vHdaWEA']){try{const entries=parseFeed(await fetchText(`https://www.youtube.com/feeds/videos.xml?channel_id=${channel}`));console.log('Feed:',channel,entries.length);if(entries[0]){try{const result=await captions(entries[0].id);console.log('Captions:',result.length,'segments');}catch(e){console.log('Captions unavailable; manual transcript imports required:',e instanceof Error?e.message:e);}}}catch(e){console.log('Feed unavailable:',e instanceof Error?e.message:e);}}}main().catch(e=>{console.error(e);process.exitCode=1;});
+import { collectPsx, fetchText, parseFeed } from "../lib/sources";
+import { captions } from "../lib/worker";
+async function main() {
+  const snapshot = await collectPsx("OGDC");
+  console.log(
+    "PSX:",
+    JSON.stringify({
+      name: snapshot.name,
+      price: snapshot.price,
+      annualPeriods: snapshot.annual.periods,
+      payouts: snapshot.payouts.length,
+      notes: snapshot.notes,
+    }),
+  );
+  for (const channel of [
+    "UC1ilKViIpulidQm5UL6mGTQ",
+    "UCjL4aKJhoVQNRJK9vHdaWEA",
+  ]) {
+    try {
+      const entries = parseFeed(
+        await fetchText(
+          `https://www.youtube.com/feeds/videos.xml?channel_id=${channel}`,
+        ),
+      );
+      console.log("Feed:", channel, entries.length);
+      if (entries[0]) {
+        try {
+          const result = await captions(entries[0].id);
+          console.log("Captions:", result.length, "segments");
+        } catch (e) {
+          console.log(
+            "Captions unavailable; manual transcript imports required:",
+            e instanceof Error ? e.message : e,
+          );
+        }
+      }
+    } catch (e) {
+      console.log("Feed unavailable:", e instanceof Error ? e.message : e);
+    }
+  }
+}
+main().catch((e) => {
+  console.error(e);
+  process.exitCode = 1;
+});

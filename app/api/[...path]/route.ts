@@ -1,0 +1,294 @@
+import { today } from "@/lib/time";
+import { NextRequest, NextResponse } from "next/server";
+import { z } from "zod";
+import { db, companies, opinions, gate, consensus, queue, now } from "@/lib/db";
+import { budget } from "@/lib/budget";
+import { research } from "@/lib/ai";
+import { recordReview } from "@/lib/transcripts";
+import {
+  importSchema,
+  reviewSchema,
+  chatSchema,
+  symbolSchema,
+  videoId,
+  officialUrl,
+} from "@/lib/validation";
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
+function local(request: NextRequest, mutation = false) {
+  const host = request.headers.get("host");
+  if (!host || !/^localhost(?::\d+)?$|^127\.0\.0\.1(?::\d+)?$/.test(host))
+    throw new Error("Only localhost access is supported");
+  if (mutation) {
+    if (request.headers.get("origin") !== `http://${host}`)
+      throw new Error("Same-origin requests are required");
+    if (!request.headers.get("content-type")?.startsWith("application/json"))
+      throw new Error("Use application/json");
+  }
+}
+function response(value: unknown, status = 200) {
+  return NextResponse.json(value, {
+    status,
+    headers: { "Cache-Control": "no-store" },
+  });
+}
+async function json(request: NextRequest) {
+  if (Number(request.headers.get("content-length") || 0) > 600000)
+    throw new Error("Request too large");
+  const text = await request.text();
+  if (Buffer.byteLength(text) > 600000) throw new Error("Request too large");
+  return JSON.parse(text);
+}
+export async function GET(
+  request: NextRequest,
+  { params }: { params: Promise<{ path: string[] }> },
+) {
+  try {
+    local(request);
+    const path = (await params).path.join("/");
+    if (path === "state") {
+      const since =
+        request.nextUrl.searchParams.get("since") ||
+        today(new Date(Date.now() - 90 * 86400000));
+      z.iso.date().parse(since);
+      const classification = db
+        .prepare("SELECT * FROM classifications")
+        .all() as {
+        symbol: string;
+        status: "compliant" | "noncompliant";
+        as_of: string;
+        source_url: string;
+      }[];
+      const list = companies().map((c) => {
+        const s = classification.find((s) => s.symbol === c.symbol);
+        const fresh = s && Date.now() - Date.parse(s.as_of) <= 180 * 86400000;
+        return {
+          ...c,
+          classification: s
+            ? { ...s, status: fresh ? s.status : "unverified" }
+            : null,
+          consensus: consensus(c.symbol, since),
+        };
+      });
+      return response({
+        companies: list,
+        opinions: opinions(),
+        videos: db
+          .prepare("SELECT * FROM videos ORDER BY published_at DESC LIMIT 200")
+          .all(),
+        sources: db.prepare("SELECT * FROM sources ORDER BY id").all(),
+        jobs: db
+          .prepare(
+            "SELECT id,type,status,progress,created_at,updated_at,error FROM jobs ORDER BY id DESC LIMIT 30",
+          )
+          .all(),
+        gate: gate(),
+        budget: budget(),
+        aiConfigured: !!process.env.OPENAI_API_KEY,
+        workerOnline: !!db
+          .prepare("SELECT 1 FROM worker_lock WHERE heartbeat>?")
+          .get(Date.now() - 30000),
+      });
+    }
+    if (path === "export") {
+      const format =
+        request.nextUrl.searchParams.get("format") === "markdown"
+          ? "markdown"
+          : "csv";
+      const rows = companies();
+      const csv = (v: unknown) =>
+        `"${String(v ?? "")
+          .replace(/"/g, '""')
+          .replace(/^[=+@-]/, "'$&")}"`;
+      const content =
+        format === "csv"
+          ? [
+              "Symbol,Company,Price PKR,PE TTM,Price return 1y excluding payouts %,Retrieved at,Source",
+              ...rows.map((c) =>
+                [
+                  c.symbol,
+                  c.name,
+                  c.snapshot?.price,
+                  c.snapshot?.pe,
+                  c.snapshot?.priceReturn,
+                  c.retrieved_at,
+                  c.source_url,
+                ]
+                  .map(csv)
+                  .join(","),
+              ),
+            ].join("\n")
+          : `# PSX research scorecard\n\n${rows.map((c) => `## ${c.symbol} — ${c.name}\n\n${c.snapshot ? `Price: PKR ${c.snapshot.price}; P/E: ${c.snapshot.pe ?? "unavailable"}; price return excluding payouts: ${c.snapshot.priceReturn ?? "unavailable"}%.\n\nRetrieved: ${c.retrieved_at}. Source: ${c.source_url}\n\n${c.snapshot.notes.join("\n")}` : "No saved observations."}`).join("\n\n")}\n\n# Approved commentary\n\n${opinions()
+              .filter((o) => o.status === "approved")
+              .map(
+                (o) =>
+                  `${o.symbol}: ${o.speaker}, ${o.stance} (${o.published_at}).\n${o.quote}\n${o.url}${o.start_seconds !== null ? `&t=${Math.floor(o.start_seconds)}` : ""}`,
+              )
+              .join("\n\n")}\n\nResearch evidence, not an investment ranking.`;
+      return new NextResponse(content, {
+        headers: {
+          "Content-Type":
+            format === "csv"
+              ? "text/csv; charset=utf-8"
+              : "text/markdown; charset=utf-8",
+          "Content-Disposition": `attachment; filename="psx-research.${format === "csv" ? "csv" : "md"}"`,
+          "Cache-Control": "no-store",
+        },
+      });
+    }
+    return response({ error: "Endpoint not found" }, 404);
+  } catch (e) {
+    return response(
+      { error: e instanceof Error ? e.message : "Request failed" },
+      400,
+    );
+  }
+}
+export async function POST(
+  request: NextRequest,
+  { params }: { params: Promise<{ path: string[] }> },
+) {
+  try {
+    local(request, true);
+    const path = (await params).path.join("/");
+    const input = await json(request);
+    if (path === "refresh") {
+      const p = z
+        .object({ symbols: z.array(symbolSchema).min(1).max(10) })
+        .strict()
+        .parse(input);
+      return response({ job: queue("refresh", p) }, 202);
+    }
+    if (path === "import") {
+      const p = importSchema.parse(input);
+      videoId(p.url);
+      return response({ job: queue("import", p) }, 202);
+    }
+    if (path === "extract") {
+      const p = z
+        .object({ id: z.string().regex(/^[-\w]{11}$/) })
+        .strict()
+        .parse(input);
+      if (!db.prepare("SELECT 1 FROM passages WHERE video_id=?").get(p.id))
+        throw new Error("Import a transcript before extraction");
+      return response({ job: queue("extract", p) }, 202);
+    }
+    if (path === "discover") {
+      const p = z
+        .object({ source_id: z.number().int().positive() })
+        .strict()
+        .parse(input);
+      if (
+        !db
+          .prepare("SELECT 1 FROM sources WHERE id=? AND enabled=1")
+          .get(p.source_id)
+      )
+        throw new Error("Source not found or disabled");
+      return response({ job: queue("discover", p) }, 202);
+    }
+    if (path === "review") {
+      recordReview(reviewSchema.parse(input));
+      return response({ ok: true });
+    }
+    if (path === "watchlist") {
+      const p = z
+        .object({ symbol: symbolSchema, watched: z.boolean() })
+        .strict()
+        .parse(input);
+      if (p.watched)
+        db.prepare("INSERT OR IGNORE INTO watchlist VALUES(?)").run(p.symbol);
+      else db.prepare("DELETE FROM watchlist WHERE symbol=?").run(p.symbol);
+      return response({ ok: true });
+    }
+    if (path === "chat") {
+      const p = chatSchema.parse(input);
+      return response(await research(p.question, p.symbols, p.since));
+    }
+    if (path === "sources") {
+      const p = z
+        .object({
+          id: z.number().int().positive().optional(),
+          name: z.string().trim().min(1).max(100),
+          url: z.string().url().max(300),
+          channel_id: z
+            .string()
+            .regex(/^UC[\w-]{22}$/)
+            .nullable(),
+          enabled: z.boolean(),
+          kind: z.enum(["expert", "institutional"]),
+        })
+        .strict()
+        .parse(input);
+      const u = new URL(p.url);
+      if (
+        u.protocol !== "https:" ||
+        u.username ||
+        u.password ||
+        u.port ||
+        ![
+          "investkaar.com",
+          "scstrade.com",
+          "www.scstrade.com",
+          "psx.com.pk",
+          "www.psx.com.pk",
+          "dps.psx.com.pk",
+          "www.youtube.com",
+          "youtube.com",
+        ].includes(u.hostname)
+      )
+        throw new Error(
+          "Use an official pilot website or HTTPS YouTube channel page",
+        );
+      if (p.id) {
+        if (
+          !db
+            .prepare(
+              "UPDATE sources SET name=?,url=?,channel_id=?,enabled=?,kind=?,verified_at=NULL WHERE id=?",
+            )
+            .run(p.name, p.url, p.channel_id, +p.enabled, p.kind, p.id).changes
+        )
+          throw new Error("Source not found");
+      } else
+        db.prepare(
+          "INSERT INTO sources(name,url,channel_id,enabled,kind) VALUES(?,?,?,?,?)",
+        ).run(p.name, p.url, p.channel_id, +p.enabled, p.kind);
+      return response({ ok: true });
+    }
+    if (path === "classification") {
+      const p = z
+        .object({
+          symbol: symbolSchema,
+          status: z.enum(["compliant", "noncompliant"]),
+          as_of: z.iso.date(),
+          source_url: z.string().url(),
+          confirmed: z.literal(true),
+        })
+        .strict()
+        .parse(input);
+      if (p.as_of > today())
+        throw new Error("Classification date cannot be in the future");
+      const url = officialUrl(p.source_url);
+      db.prepare(
+        "INSERT INTO classifications VALUES(?,?,?,?,?) ON CONFLICT(symbol) DO UPDATE SET status=excluded.status,as_of=excluded.as_of,source_url=excluded.source_url,reviewed_at=excluded.reviewed_at",
+      ).run(p.symbol, p.status, p.as_of, url, now());
+      return response({ ok: true });
+    }
+    if (path === "retry") {
+      const p = z
+        .object({ id: z.number().int().positive() })
+        .strict()
+        .parse(input);
+      const old = db
+        .prepare("SELECT type,payload FROM jobs WHERE id=? AND status='failed'")
+        .get(p.id) as { type: string; payload: string } | undefined;
+      if (!old) throw new Error("Failed job not found");
+      return response({ job: queue(old.type, JSON.parse(old.payload)) }, 202);
+    }
+    return response({ error: "Endpoint not found" }, 404);
+  } catch (e) {
+    return response(
+      { error: e instanceof Error ? e.message : "Request failed" },
+      400,
+    );
+  }
+}
