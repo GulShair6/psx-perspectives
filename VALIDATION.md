@@ -23,3 +23,9 @@
 ## Live acceptance procedure
 
 Configure the key server-side, import real transcripts from the pilot sources, and extract opinions. Independently assess at least 30 distinct passages in Opinion review, correcting the company/stance before marking a reference. Consensus unlocks only at 90% or higher accuracy. Then ask the ten questions in `tests/research-questions.json`; verify every cited number, date, opinion, source link and timestamp against its underlying evidence, and retain the explicit data gaps.
+
+## Automated caption collection update
+
+Enabled sources are scheduled by the existing worker every six hours, using persisted next-check times and a single active job per source. Video captions are collected without an AI key, deduplicated, and kept with normalized timestamps. Missing captions have a daily cooldown; YouTube rate blocks stop the batch. Video library exposes last/next checks and source failures. No speech-to-text service or audio download was added.
+
+Validation on 12 October 2026: all 19 core tests, type checking, production build, and browser checks passed. A live scheduled run discovered ten SCS Trade videos and seven PSX videos, saving nine and five caption transcripts respectively. Three videos reported disabled captions and remain marked for manual import/daily retry. InvestKaar's official page did not expose a verifiable channel identity, so its scheduled job failed visibly without selecting an assumed channel.

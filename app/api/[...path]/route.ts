@@ -4,6 +4,7 @@ import { z } from "zod";
 import { db, companies, opinions, gate, consensus, queue, now } from "@/lib/db";
 import { budget } from "@/lib/budget";
 import { research } from "@/lib/ai";
+import { queueDiscovery } from "@/lib/worker";
 import { recordReview } from "@/lib/transcripts";
 import {
   importSchema,
@@ -184,7 +185,7 @@ export async function POST(
           .get(p.source_id)
       )
         throw new Error("Source not found or disabled");
-      return response({ job: queue("discover", p) }, 202);
+      return response({ job: queueDiscovery(p.source_id) }, 202);
     }
     if (path === "review") {
       recordReview(reviewSchema.parse(input));
@@ -243,7 +244,7 @@ export async function POST(
         if (
           !db
             .prepare(
-              "UPDATE sources SET name=?,url=?,channel_id=?,enabled=?,kind=?,verified_at=NULL WHERE id=?",
+              "UPDATE sources SET name=?,url=?,channel_id=?,enabled=?,kind=?,verified_at=NULL,next_check_at=NULL,last_error=NULL WHERE id=?",
             )
             .run(p.name, p.url, p.channel_id, +p.enabled, p.kind, p.id).changes
         )
@@ -282,7 +283,16 @@ export async function POST(
         .prepare("SELECT type,payload FROM jobs WHERE id=? AND status='failed'")
         .get(p.id) as { type: string; payload: string } | undefined;
       if (!old) throw new Error("Failed job not found");
-      return response({ job: queue(old.type, JSON.parse(old.payload)) }, 202);
+      const payload = JSON.parse(old.payload);
+      return response(
+        {
+          job:
+            old.type === "discover"
+              ? queueDiscovery(payload.source_id)
+              : queue(old.type, payload),
+        },
+        202,
+      );
     }
     return response({ error: "Endpoint not found" }, 404);
   } catch (e) {

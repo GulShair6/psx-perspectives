@@ -10,6 +10,9 @@ type Source = {
   enabled: number;
   kind: string;
   verified_at: string | null;
+  last_checked_at?: string | null;
+  next_check_at?: string | null;
+  last_error?: string | null;
 };
 type Video = {
   id: string;
@@ -1102,10 +1105,11 @@ export default function Desk() {
                       )}
                     </div>
                     <div className="panel padded">
-                      <h2>Channel discovery</h2>
+                      <h2>Automatic caption collection</h2>
                       <p>
-                        Checks the official source page, then its channel feed.
-                        Up to ten relevant videos from the last 90 days.
+                        Enabled channels are checked automatically every six
+                        hours while the app is running. New captions are saved
+                        with timestamps. Unavailable captions are retried daily.
                       </p>
                       {state.sources.map((s) => (
                         <div className="source-row" key={s.id}>
@@ -1120,6 +1124,17 @@ export default function Desk() {
                                 ? "Identity verified"
                                 : "Identity not verified yet"}
                             </small>
+                            <small>
+                              {s.enabled
+                                ? `Last checked: ${s.last_checked_at ? date(s.last_checked_at) : "Waiting for worker"}`
+                                : "Automatic collection paused"}
+                            </small>
+                            {s.enabled && s.next_check_at && (
+                              <small>Next check: {date(s.next_check_at)}</small>
+                            )}
+                            {s.last_error && (
+                              <small className="negative">{s.last_error}</small>
+                            )}
                           </div>
                           <button
                             className="secondary"
@@ -1128,7 +1143,7 @@ export default function Desk() {
                               action("discover", { source_id: s.id })
                             }
                           >
-                            Discover
+                            Check now
                           </button>
                         </div>
                       ))}
@@ -1552,7 +1567,7 @@ export default function Desk() {
                   type="checkbox"
                   defaultChecked={!!source.enabled}
                 />{" "}
-                Include in discovery
+                Automatically collect this channel’s captions
               </label>
               <button className="primary" disabled={pending}>
                 Save source

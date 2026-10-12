@@ -11,6 +11,8 @@ process.env.PSX_DB_PATH = path;
 delete process.env.OPENAI_API_KEY;
 const { db, saveSnapshot, gate } = await import("../lib/db");
 const { importTranscript } = await import("../lib/transcripts");
+// Browser fixtures do not contact external channels; scheduling is tested separately.
+db.prepare("UPDATE sources SET enabled=0").run();
 const existing = join(process.cwd(), "data", "research.sqlite");
 if (existsSync(existing)) {
   const source = new Database(existing, { readonly: true });
@@ -133,6 +135,8 @@ try {
   await page
     .getByRole("button", { name: "Video library", exact: true })
     .click();
+  await expect(page.getByRole("heading", {name:"Automatic caption collection"})).toBeVisible();
+  await expect(page.getByText("Automatic collection paused").first()).toBeVisible();
   await page
     .getByLabel("Video URL", { exact: true })
     .fill("https://www.youtube.com/watch?v=zztest00002");

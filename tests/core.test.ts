@@ -22,8 +22,15 @@ const {
   retrieve,
   research,
 } = await import("../lib/ai");
-const { runJob, claimJob, normalizeCaptions, groupCaptions } =
-  await import("../lib/worker");
+const {
+  runJob,
+  claimJob,
+  normalizeCaptions,
+  groupCaptions,
+  queueDiscovery,
+  scheduleDiscovery,
+  DISCOVERY_INTERVAL,
+} = await import("../lib/worker");
 const html = `<title>OGDC - Quote</title><div class="quote__name">Oil &amp; Gas Development Company<div class="tag">XD</div></div><div class="quote__close">Rs.300.39</div><div class="quote__date">As of Oct 12, 2026</div><div class="quote__sector">Energy</div><div class="change__percent">(-1.87%)</div><div class="tabs__panel" data-name="REG"><div class="stats_item"><div class="stats_label">P/E Ratio (TTM) **</div><div class="stats_value">5.33</div></div><div class="stats_item"><div class="stats_label">Volume</div><div class="stats_value">1,929,730</div></div></div><div id="financials"><div class="tabs__panel" data-name="Annual"><table><thead><tr><th></th><th>2026</th><th>2025</th></tr></thead><tbody><tr><td>EPS</td><td>56.35</td><td>-</td></tr></tbody></table></div></div>`;
 let opinionId = 0;
 test("numeric parser preserves missing values, losses and units", () => {
@@ -385,6 +392,178 @@ test("empty evidence answers disclose gaps without charging AI", async () => {
   assert.equal(answer.citations.length, 0);
   assert.ok(answer.gaps.length);
 });
+test("automatic discovery schedules due enabled sources once and persists six-hour checks", () => {
+  db.prepare("UPDATE sources SET enabled=0,next_check_at=NULL").run();
+  db.prepare("UPDATE sources SET enabled=1 WHERE id=2").run();
+  const time = Date.now();
+  scheduleDiscovery(time);
+  scheduleDiscovery(time);
+  const jobs = db
+    .prepare("SELECT id FROM jobs WHERE type='discover'")
+    .all() as { id: number }[];
+  assert.equal(jobs.length, 1);
+  assert.equal(queueDiscovery(2, time), jobs[0].id);
+  assert.throws(() => queueDiscovery(1, time));
+  db.prepare("UPDATE jobs SET status='done' WHERE id=?").run(jobs[0].id);
+  scheduleDiscovery(time + DISCOVERY_INTERVAL - 1);
+  assert.equal(
+    (
+      db.prepare("SELECT COUNT(*) n FROM jobs WHERE type='discover'").get() as {
+        n: number;
+      }
+    ).n,
+    1,
+  );
+  scheduleDiscovery(time + DISCOVERY_INTERVAL);
+  assert.equal(
+    (
+      db.prepare("SELECT COUNT(*) n FROM jobs WHERE type='discover'").get() as {
+        n: number;
+      }
+    ).n,
+    2,
+  );
+});
+
+test("automatic channel collection saves captions without a key and skips saved videos", async () => {
+  const originalFetch = globalThis.fetch;
+  const originalKey = process.env.OPENAI_API_KEY;
+  delete process.env.OPENAI_API_KEY;
+  let captionRequests = 0;
+  const published = new Date(Date.now() - 86400000).toISOString();
+  globalThis.fetch = async (input, init) => {
+    const url = new URL(String(input));
+    if (url.hostname === "scstrade.com")
+      return new Response(
+        '<a href="https://www.youtube.com/channel/UCjL4aKJhoVQNRJK9vHdaWEA">Official channel</a>',
+      );
+    if (url.pathname === "/feeds/videos.xml")
+      return new Response(
+        `<feed xmlns:yt="http://www.youtube.com/xml/schemas/2015"><entry><yt:videoId>autovid0001</yt:videoId><title>PSX earnings discussion</title><published>${published}</published><link href="https://www.youtube.com/watch?v=autovid0001"/></entry></feed>`,
+      );
+    if (url.pathname === "/youtubei/v1/player") {
+      captionRequests++;
+      return Response.json({
+        captions: {
+          playerCaptionsTracklistRenderer: {
+            captionTracks: [
+              {
+                baseUrl: "https://www.youtube.com/api/timedtext?v=autovid0001",
+                languageCode: "ur",
+              },
+            ],
+          },
+        },
+      });
+    }
+    if (url.pathname === "/api/timedtext")
+      return new Response(
+        '<timedtext><p t="3000" d="2000"><s>OGDC کی مالی رپورٹ</s></p></timedtext>',
+      );
+    throw new Error("Unexpected network request");
+  };
+  try {
+    const job = {
+      id: 999,
+      type: "discover",
+      payload: JSON.stringify({ source_id: 2 }),
+    };
+    await runJob(job);
+    await runJob(job);
+    assert.equal(captionRequests, 1);
+    assert.equal(
+      (
+        db
+          .prepare(
+            "SELECT COUNT(*) n FROM passages WHERE video_id='autovid0001'",
+          )
+          .get() as { n: number }
+      ).n,
+      1,
+    );
+    assert.equal(
+      (
+        db
+          .prepare(
+            "SELECT start_seconds FROM passages WHERE video_id='autovid0001'",
+          )
+          .get() as { start_seconds: number }
+      ).start_seconds,
+      3,
+    );
+    assert.equal(
+      (
+        db.prepare("SELECT last_error FROM sources WHERE id=2").get() as {
+          last_error: string | null;
+        }
+      ).last_error,
+      null,
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (originalKey) process.env.OPENAI_API_KEY = originalKey;
+  }
+});
+
+test("blocked captions stop the batch and unavailable videos get a daily cooldown", async () => {
+  const originalFetch = globalThis.fetch;
+  let requests = 0;
+  const published = new Date(Date.now() - 86400000).toISOString();
+  globalThis.fetch = async (input) => {
+    const url = new URL(String(input));
+    if (url.hostname === "scstrade.com")
+      return new Response(
+        '<a href="https://www.youtube.com/channel/UCjL4aKJhoVQNRJK9vHdaWEA">Official channel</a>',
+      );
+    if (url.pathname === "/feeds/videos.xml")
+      return new Response(
+        `<feed xmlns:yt="http://www.youtube.com/xml/schemas/2015">${["autovid0002", "autovid0003"].map((id) => `<entry><yt:videoId>${id}</yt:videoId><title>PSX market research</title><published>${published}</published><link href="https://www.youtube.com/watch?v=${id}"/></entry>`).join("")}</feed>`,
+      );
+    requests++;
+    return new Response("Blocked", { status: 429 });
+  };
+  try {
+    const job = {
+      id: 999,
+      type: "discover",
+      payload: JSON.stringify({ source_id: 2 }),
+    };
+    await assert.rejects(() => runJob(job), /too many requests/);
+    assert.equal(requests, 1);
+    assert.equal(
+      db.prepare("SELECT 1 FROM videos WHERE id='autovid0003'").get(),
+      undefined,
+    );
+    db.prepare(
+      "INSERT INTO videos(id,title,speaker,published_at,url,caption_attempted_at) VALUES(?,?,?,?,?,?)",
+    ).run(
+      "autovid0003",
+      "Fixture",
+      "Fixture",
+      published,
+      "https://www.youtube.com/watch?v=autovid0003",
+      now(),
+    );
+    await runJob(job);
+    assert.equal(requests, 1);
+    db.prepare(
+      "UPDATE videos SET caption_attempted_at=? WHERE id='autovid0002'",
+    ).run(new Date(Date.now() - 25 * 3600000).toISOString());
+    await assert.rejects(() => runJob(job), /too many requests/);
+    assert.equal(requests, 2);
+    assert.match(
+      (
+        db.prepare("SELECT last_error FROM sources WHERE id=2").get() as {
+          last_error: string;
+        }
+      ).last_error,
+      /too many requests/,
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test.after(() => {
   db.close();
   rmSync(temp, { recursive: true, force: true });

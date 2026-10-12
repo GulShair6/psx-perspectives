@@ -1,10 +1,59 @@
-import { YoutubeTranscript } from "youtube-transcript";
+import {
+  YoutubeTranscript,
+  YoutubeTranscriptTooManyRequestError,
+} from "youtube-transcript";
 import { db, now, saveSnapshot } from "./db";
 import { collectPsx, fetchText, parseFeed } from "./sources";
 import { importTranscript } from "./transcripts";
 import { extractVideo } from "./ai";
 import { symbolSchema, videoId } from "./validation";
 import { createHash } from "node:crypto";
+export const DISCOVERY_INTERVAL = 6 * 60 * 60 * 1000;
+export const CAPTION_RETRY_INTERVAL = 24 * 60 * 60 * 1000;
+
+export function queueDiscovery(sourceId: number, time = Date.now()) {
+  return db
+    .transaction(() => {
+      if (
+        !db
+          .prepare("SELECT 1 FROM sources WHERE id=? AND enabled=1")
+          .get(sourceId)
+      )
+        throw new Error("Source not found or disabled");
+      const active = db
+        .prepare(
+          "SELECT id FROM jobs WHERE type='discover' AND status IN ('queued','running') AND json_extract(payload,'$.source_id')=? ORDER BY id LIMIT 1",
+        )
+        .get(sourceId) as { id: number } | undefined;
+      if (active) return active.id;
+      const stamp = new Date(time).toISOString();
+      const job = Number(
+        db
+          .prepare(
+            "INSERT INTO jobs(type,payload,created_at,updated_at) VALUES('discover',?,?,?)",
+          )
+          .run(JSON.stringify({ source_id: sourceId }), stamp, stamp)
+          .lastInsertRowid,
+      );
+      db.prepare("UPDATE sources SET next_check_at=? WHERE id=?").run(
+        new Date(time + DISCOVERY_INTERVAL).toISOString(),
+        sourceId,
+      );
+      return job;
+    })
+    .immediate();
+}
+
+export function scheduleDiscovery(time = Date.now()) {
+  db.transaction(() => {
+    const due = db
+      .prepare(
+        "SELECT id FROM sources WHERE enabled=1 AND (next_check_at IS NULL OR next_check_at<=?) ORDER BY id",
+      )
+      .all(new Date(time).toISOString()) as { id: number }[];
+    for (const source of due) queueDiscovery(source.id, time);
+  }).immediate();
+}
 export function normalizeCaptions(
   segments: { text: string; offset: number; duration: number; lang?: string }[],
   milliseconds: boolean,
@@ -17,8 +66,10 @@ export function normalizeCaptions(
 }
 export async function captions(id: string) {
   let milliseconds = false;
+  let blocked = false;
   const segments = await YoutubeTranscript.fetchTranscript(id, {
     fetch: async (input, init) => {
+      if (blocked) throw new YoutubeTranscriptTooManyRequestError();
       const u = new URL(
         typeof input === "string"
           ? input
@@ -39,6 +90,10 @@ export async function captions(id: string) {
         redirect: "error",
         signal: AbortSignal.timeout(20_000),
       });
+      if (response.status === 429 || response.status === 403) {
+        blocked = true;
+        throw new YoutubeTranscriptTooManyRequestError();
+      }
       const body = await response.text();
       if (Buffer.byteLength(body) > 3_000_000)
         throw new Error("Caption response exceeds size limit");
@@ -79,6 +134,9 @@ export async function discover(
       }
     | undefined;
   if (!s) throw new Error("Source is missing or disabled");
+  db.prepare(
+    "UPDATE sources SET last_checked_at=?,last_error=NULL WHERE id=?",
+  ).run(now(), s.id);
   const html = await fetchText(s.url);
   const ids = [
     ...html.matchAll(
@@ -116,13 +174,28 @@ export async function discover(
   for (const v of relevant) {
     progress(`Checking ${v.title.slice(0, 80)}`);
     const existing = db
-      .prepare("SELECT content_hash FROM videos WHERE id=?")
-      .get(v.id) as { content_hash: string | null } | undefined;
+      .prepare(
+        "SELECT content_hash,caption_attempted_at FROM videos WHERE id=?",
+      )
+      .get(v.id) as
+      | { content_hash: string | null; caption_attempted_at: string | null }
+      | undefined;
     if (existing?.content_hash) continue;
-    videoId(v.url);
+    if (
+      existing?.caption_attempted_at &&
+      Date.now() - Date.parse(existing.caption_attempted_at) <
+        CAPTION_RETRY_INTERVAL
+    )
+      continue;
+    if (videoId(v.url) !== v.id)
+      throw new Error("Feed video identity mismatch");
     db.prepare(
       "INSERT OR IGNORE INTO videos(id,source_id,title,speaker,published_at,url) VALUES(?,?,?,?,?,?)",
     ).run(v.id, s.id, v.title, s.name, v.published_at, v.url);
+    db.prepare("UPDATE videos SET caption_attempted_at=? WHERE id=?").run(
+      now(),
+      v.id,
+    );
     try {
       const segments = await captions(v.id);
       const text = segments.map((x) => x.text).join(" ");
@@ -156,6 +229,7 @@ export async function discover(
       db.prepare(
         "UPDATE videos SET status='needs_transcript',error=? WHERE id=?",
       ).run(String(e instanceof Error ? e.message : e), v.id);
+      if (e instanceof YoutubeTranscriptTooManyRequestError) throw e;
     }
     await new Promise((r) => setTimeout(r, 1500));
   }
@@ -205,7 +279,21 @@ export async function runJob(job: {
     await extractVideo(p.id);
     return "Opinions extracted and awaiting review";
   }
-  if (job.type === "discover") return discover(p.source_id, progress);
+  if (job.type === "discover") {
+    try {
+      const result = await discover(p.source_id, progress);
+      db.prepare("UPDATE sources SET last_error=NULL WHERE id=?").run(
+        p.source_id,
+      );
+      return result;
+    } catch (e) {
+      db.prepare("UPDATE sources SET last_error=? WHERE id=?").run(
+        e instanceof Error ? e.message : String(e),
+        p.source_id,
+      );
+      throw e;
+    }
+  }
   throw new Error("Unknown job type");
 }
 export function claimJob() {

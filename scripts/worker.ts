@@ -1,5 +1,5 @@
 import { db, now } from "../lib/db";
-import { claimJob, runJob } from "../lib/worker";
+import { claimJob, runJob, scheduleDiscovery } from "../lib/worker";
 import { randomUUID } from "node:crypto";
 const owner = randomUUID();
 const acquired = db
@@ -34,7 +34,12 @@ for (const signal of ["SIGINT", "SIGTERM"] as const)
   });
 async function main() {
   console.log("PSX ingestion worker ready");
+  let nextScan = 0;
   while (!stopping) {
+    if (Date.now() >= nextScan) {
+      scheduleDiscovery();
+      nextScan = Date.now() + 15_000;
+    }
     const j = claimJob();
     if (!j) {
       await new Promise((r) => setTimeout(r, 750));
