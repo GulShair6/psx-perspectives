@@ -1,0 +1,15 @@
+CREATE TABLE companies(symbol TEXT PRIMARY KEY,name TEXT NOT NULL,aliases TEXT NOT NULL,sector TEXT NOT NULL DEFAULT '',validated_at TEXT);
+CREATE TABLE observations(id INTEGER PRIMARY KEY,symbol TEXT NOT NULL REFERENCES companies(symbol),retrieved_at TEXT NOT NULL,source_url TEXT NOT NULL,payload TEXT NOT NULL);
+CREATE INDEX observations_symbol ON observations(symbol,id DESC);
+CREATE TABLE sources(id INTEGER PRIMARY KEY,name TEXT NOT NULL,url TEXT NOT NULL,channel_id TEXT,verified_at TEXT,enabled INTEGER NOT NULL DEFAULT 1,kind TEXT NOT NULL DEFAULT 'expert');
+CREATE TABLE videos(id TEXT PRIMARY KEY,source_id INTEGER REFERENCES sources(id),title TEXT NOT NULL,speaker TEXT NOT NULL,published_at TEXT NOT NULL,url TEXT NOT NULL,language TEXT NOT NULL DEFAULT 'unknown',status TEXT NOT NULL DEFAULT 'discovered',error TEXT,content_hash TEXT);
+CREATE TABLE passages(id INTEGER PRIMARY KEY,video_id TEXT NOT NULL REFERENCES videos(id),start_seconds REAL,text TEXT NOT NULL);
+CREATE VIRTUAL TABLE passage_search USING fts5(text,content='passages',content_rowid='id',tokenize='unicode61');
+CREATE TRIGGER passage_ai AFTER INSERT ON passages BEGIN INSERT INTO passage_search(rowid,text) VALUES(new.id,new.text); END;
+CREATE TABLE opinions(id INTEGER PRIMARY KEY,video_id TEXT NOT NULL REFERENCES videos(id),passage_id INTEGER NOT NULL REFERENCES passages(id),symbol TEXT NOT NULL REFERENCES companies(symbol),speaker TEXT NOT NULL,stance TEXT NOT NULL CHECK(stance IN ('bullish','bearish','neutral')),rationale TEXT NOT NULL,target TEXT,horizon TEXT,quote TEXT NOT NULL,hypothetical INTEGER NOT NULL DEFAULT 0,status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','approved','rejected')),extracted_symbol TEXT NOT NULL,extracted_stance TEXT NOT NULL,reviewed_at TEXT);
+CREATE TABLE evaluations(opinion_id INTEGER PRIMARY KEY REFERENCES opinions(id),correct INTEGER NOT NULL CHECK(correct IN (0,1)),evaluated_at TEXT NOT NULL);
+CREATE TABLE watchlist(symbol TEXT PRIMARY KEY REFERENCES companies(symbol));
+CREATE TABLE jobs(id INTEGER PRIMARY KEY,type TEXT NOT NULL,payload TEXT NOT NULL,status TEXT NOT NULL DEFAULT 'queued',progress TEXT NOT NULL DEFAULT 'Waiting for worker',created_at TEXT NOT NULL,updated_at TEXT NOT NULL,error TEXT);
+CREATE TABLE usage(id INTEGER PRIMARY KEY,month TEXT NOT NULL,purpose TEXT NOT NULL,reserved_micro INTEGER NOT NULL,actual_micro INTEGER,status TEXT NOT NULL DEFAULT 'reserved',created_at TEXT NOT NULL);
+CREATE TABLE worker_lock(id INTEGER PRIMARY KEY CHECK(id=1),owner TEXT NOT NULL,heartbeat INTEGER NOT NULL);
+CREATE TABLE classifications(symbol TEXT PRIMARY KEY REFERENCES companies(symbol),status TEXT NOT NULL CHECK(status IN ('compliant','noncompliant')),as_of TEXT NOT NULL,source_url TEXT NOT NULL,reviewed_at TEXT NOT NULL);

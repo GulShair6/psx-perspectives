@@ -1,0 +1,7 @@
+export type Stance = 'bullish'|'bearish'|'neutral';
+export type Table = {periods:string[]; rows:{label:string;values:(number|null)[]}[];unit:string;basis:string};
+export type Snapshot = {name:string;sector:string;price:number;change:number|null;priceDate:string;pe:number|null;volume:number|null;priceReturn:number|null;annual:Table;quarterly:Table;ratios:Table;payouts:{date:string;description:string}[];announcements:{date:string;title:string;url:string}[];shariah:{status:'compliant'|'noncompliant'|'unverified';date:string|null;url:string|null};notes:string[]};
+export type Company = {symbol:string;name:string;aliases:string[];sector:string;validated_at:string|null;snapshot:Snapshot|null;retrieved_at:string|null;source_url:string|null;watched:boolean};
+export type Opinion = {id:number;video_id:string;passage_id:number;symbol:string;speaker:string;stance:Stance;rationale:string;target:string|null;horizon:string|null;quote:string;hypothetical:number;status:string;extracted_symbol:string;extracted_stance:string;published_at:string;title:string;url:string;start_seconds:number|null;correct:number|null;kind:string};
+export type Evidence = {id:string;text:string;url:string;date:string;start_seconds:number|null;kind:'company'|'commentary'};
+export type Citation = {evidenceId:string;url:string;label:string};

@@ -1,0 +1,38 @@
+{
+  "name": "psx-research-desk",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "node scripts/launch.mjs",
+    "dev:web": "next dev --hostname 127.0.0.1",
+    "worker": "tsx scripts/worker.ts",
+    "build": "next build",
+    "start": "node scripts/launch.mjs --production",
+    "test": "tsx --test tests/*.test.ts",
+    "typecheck": "tsc --noEmit",
+    "proof": "tsx scripts/proof.ts",
+    "refresh": "tsx scripts/refresh.ts",
+    "backup": "tsx scripts/backup.ts",
+    "test:browser": "tsx scripts/browser-check.ts"
+  },
+  "dependencies": {
+    "next": "16.4.0",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0",
+    "better-sqlite3": "^12.0.0",
+    "cheerio": "^1.1.2",
+    "openai": "^6.0.0",
+    "youtube-transcript": "1.3.1",
+    "zod": "^4.0.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.0",
+    "tsx": "^4.20.0",
+    "@types/node": "^22.0.0",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "@types/better-sqlite3": "^7.6.0",
+    "@playwright/test": "^1.56.0"
+  },
+  "type": "module"
+}
