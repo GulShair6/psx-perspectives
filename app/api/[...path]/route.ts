@@ -3,7 +3,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { db, companies, opinions, gate, consensus, queue, now } from "@/lib/db";
 import { budget } from "@/lib/budget";
-import { research } from "@/lib/ai";
+import { research, aiSettings } from "@/lib/ai";
 import { queueDiscovery } from "@/lib/worker";
 import { recordReview } from "@/lib/transcripts";
 import {
@@ -85,7 +85,9 @@ export async function GET(
           .all(),
         gate: gate(),
         budget: budget(),
-        aiConfigured: !!process.env.OPENAI_API_KEY,
+        aiConfigured: aiSettings().configured,
+        aiProvider: aiSettings().provider,
+        aiModel: aiSettings().model,
         workerOnline: !!db
           .prepare("SELECT 1 FROM worker_lock WHERE heartbeat>?")
           .get(Date.now() - 30000),

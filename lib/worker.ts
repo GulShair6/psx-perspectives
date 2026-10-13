@@ -5,7 +5,7 @@ import {
 import { db, now, saveSnapshot } from "./db";
 import { collectPsx, fetchText, parseFeed } from "./sources";
 import { importTranscript } from "./transcripts";
-import { extractVideo } from "./ai";
+import { extractVideo, aiSettings } from "./ai";
 import { symbolSchema, videoId } from "./validation";
 import { createHash } from "node:crypto";
 export const DISCOVERY_INTERVAL = 6 * 60 * 60 * 1000;
@@ -215,7 +215,7 @@ export async function discover(
         );
       }).immediate();
       captionCount++;
-      if (process.env.OPENAI_API_KEY) {
+      if (aiSettings().configured) {
         try {
           await extractVideo(v.id);
         } catch (e) {
@@ -267,7 +267,7 @@ export async function runJob(job: {
     progress(
       r.duplicate ? "Existing transcript preserved" : "Transcript saved",
     );
-    if (process.env.OPENAI_API_KEY) {
+    if (aiSettings().configured) {
       await extractVideo(r.id);
       return "Transcript imported; extracted opinions await review";
     }

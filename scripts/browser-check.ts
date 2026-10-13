@@ -9,6 +9,7 @@ const temp = mkdtempSync(join(tmpdir(), "psx-browser-"));
 const path = join(temp, "research.sqlite");
 process.env.PSX_DB_PATH = path;
 delete process.env.OPENAI_API_KEY;
+delete process.env.OLLAMA_API_KEY;
 const { db, saveSnapshot, gate } = await import("../lib/db");
 const { importTranscript } = await import("../lib/transcripts");
 // Browser fixtures do not contact external channels; scheduling is tested separately.
@@ -49,7 +50,12 @@ db.prepare(
   "OGDC",
   "neutral",
 );
-const env = { ...process.env, PSX_DB_PATH: path, OPENAI_API_KEY: "" };
+const env = {
+  ...process.env,
+  PSX_DB_PATH: path,
+  OPENAI_API_KEY: "",
+  OLLAMA_API_KEY: "",
+};
 let logs = "";
 const web = spawn(
   process.execPath,
@@ -135,8 +141,12 @@ try {
   await page
     .getByRole("button", { name: "Video library", exact: true })
     .click();
-  await expect(page.getByRole("heading", {name:"Automatic caption collection"})).toBeVisible();
-  await expect(page.getByText("Automatic collection paused").first()).toBeVisible();
+  await expect(
+    page.getByRole("heading", { name: "Automatic caption collection" }),
+  ).toBeVisible();
+  await expect(
+    page.getByText("Automatic collection paused").first(),
+  ).toBeVisible();
   await page
     .getByLabel("Video URL", { exact: true })
     .fill("https://www.youtube.com/watch?v=zztest00002");

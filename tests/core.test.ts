@@ -21,6 +21,8 @@ const {
   citation,
   retrieve,
   research,
+  askJson,
+  aiSettings,
 } = await import("../lib/ai");
 const {
   runJob,
@@ -561,6 +563,81 @@ test("blocked captions stop the batch and unavailable videos get a daily cooldow
     );
   } finally {
     globalThis.fetch = originalFetch;
+  }
+});
+
+test("Ollama Cloud uses the server key, validates JSON and accounts for credit usage", async () => {
+  const originalFetch = globalThis.fetch;
+  const originalKey = process.env.OLLAMA_API_KEY;
+  process.env.OLLAMA_API_KEY = "test-server-secret";
+  db.prepare("DELETE FROM usage").run();
+  let raw = '{"ok":true}';
+  let status = 200;
+  let finish = "stop";
+  globalThis.fetch = async (input, init) => {
+    const request = input instanceof Request ? input : new Request(input, init);
+    assert.equal(request.url, "https://ollama.com/v1/chat/completions");
+    assert.equal(
+      request.headers.get("authorization"),
+      "Bearer test-server-secret",
+    );
+    const body = await request.json();
+    assert.equal(body.model, "gemma4:31b");
+    assert.equal(body.max_tokens, 100);
+    assert.equal(body.response_format, undefined);
+    assert.match(body.messages[0].content, /schema/);
+    return Response.json(
+      status === 200
+        ? {
+            choices: [{ message: { content: raw }, finish_reason: finish }],
+            usage: { prompt_tokens: 1000, completion_tokens: 100 },
+          }
+        : { error: { message: "quota exhausted" } },
+      { status },
+    );
+  };
+  const call = () =>
+    askJson(
+      "test cloud",
+      "Respond as JSON",
+      {},
+      {
+        type: "object",
+        properties: { ok: { type: "boolean" } },
+        required: ["ok"],
+      },
+      (value) => {
+        assert.deepEqual(value, { ok: true });
+        return value;
+      },
+      100,
+    );
+  try {
+    assert.equal(aiSettings().provider, "Ollama Cloud");
+    assert.deepEqual(await call(), { ok: true });
+    assert.equal(budget().used, 0.00018);
+    raw = '```json\n{"ok":true}\n```';
+    assert.deepEqual(await call(), { ok: true });
+    raw = "unstructured output";
+    await assert.rejects(call(), /JSON/);
+    raw = '{"ok":false}';
+    await assert.rejects(call());
+    finish = "length";
+    await assert.rejects(call(), /truncated/);
+    status = 429;
+    await assert.rejects(call(), /quota exhausted/);
+    assert.equal(
+      (
+        db
+          .prepare("SELECT status FROM usage ORDER BY id DESC LIMIT 1")
+          .get() as { status: string }
+      ).status,
+      "released",
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (originalKey === undefined) delete process.env.OLLAMA_API_KEY;
+    else process.env.OLLAMA_API_KEY = originalKey;
   }
 });
 

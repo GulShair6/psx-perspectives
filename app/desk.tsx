@@ -49,6 +49,8 @@ type State = {
   budget: { used: number; remaining: number; limit: number };
   gate: { enabled: boolean; reviewed: number; accuracy: number };
   aiConfigured: boolean;
+  aiProvider: string;
+  aiModel: string;
   workerOnline: boolean;
 };
 type Answer = {
@@ -1295,18 +1297,25 @@ export default function Desk() {
                     <h3>AI and storage</h3>
                     <p>
                       {state.aiConfigured
-                        ? "OpenAI key configured on the server."
-                        : "OpenAI key not configured. Set OPENAI_API_KEY in .env.local and restart."}
+                        ? `${state.aiProvider} configured on the server (${state.aiModel}).`
+                        : "AI key not configured. Set OLLAMA_API_KEY or OPENAI_API_KEY in .env.local and restart."}
                     </p>
                     <p>
-                      Monthly spend: ${fmt(state.budget.used)} / $10.
+                      Estimated model usage: ${fmt(state.budget.used)} / $10.
                       Reservations remain held when a provider timeout leaves
                       billing uncertain.
                     </p>
+                    {state.aiProvider === "Ollama Cloud" && (
+                      <p>
+                        Ollama starter credits are limited. This app tracks
+                        model usage, not your account credit balance. No
+                        paid-provider fallback is enabled.
+                      </p>
+                    )}
                     <p>
                       Research data stays in the local database. Relevant
-                      evidence is sent to OpenAI when extracting opinions or
-                      asking questions.
+                      evidence is sent to {state.aiProvider} when extracting
+                      opinions or asking questions.
                     </p>
                     <a href="/api/export?format=markdown">
                       Export research as Markdown

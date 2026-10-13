@@ -41,7 +41,13 @@ export function reserve(purpose: string, micro: number) {
     })
     .immediate();
 }
-export function settle(id: number, input: number, output: number) {
+export function settle(
+  id: number,
+  input: number,
+  output: number,
+  inputRate = 0.4,
+  outputRate = 1.6,
+) {
   if (
     !Number.isSafeInteger(input) ||
     !Number.isSafeInteger(output) ||
@@ -49,7 +55,11 @@ export function settle(id: number, input: number, output: number) {
     output < 0
   )
     throw new Error("Invalid AI usage");
-  const actual = Math.ceil(input * 0.4 + output * 1.6);
+  if (
+    ![inputRate, outputRate].every((rate) => Number.isFinite(rate) && rate >= 0)
+  )
+    throw new Error("Invalid AI pricing");
+  const actual = Math.ceil(input * inputRate + output * outputRate);
   const r = db
     .prepare(
       "UPDATE usage SET actual_micro=?,status='settled' WHERE id=? AND status='reserved'",
