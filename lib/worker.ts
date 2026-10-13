@@ -2,15 +2,119 @@ import {
   YoutubeTranscript,
   YoutubeTranscriptTooManyRequestError,
 } from "youtube-transcript";
-import { db, now, saveSnapshot } from "./db";
+import { db, now, saveSnapshot, queue } from "./db";
 import { collectPsx, fetchText, parseFeed } from "./sources";
 import { importTranscript } from "./transcripts";
-import { extractVideo, aiSettings } from "./ai";
+import { extractVideo } from "./ai";
 import { symbolSchema, videoId } from "./validation";
+import OpenAI from "openai";
+import { z } from "zod";
 import { createHash } from "node:crypto";
 export const DISCOVERY_INTERVAL = 6 * 60 * 60 * 1000;
 export const CAPTION_RETRY_INTERVAL = 24 * 60 * 60 * 1000;
 
+export const extractionIds = z
+  .array(z.string().regex(/^[-\w]{11}$/))
+  .min(1)
+  .max(10)
+  .refine((ids) => new Set(ids).size === ids.length, "Choose unique videos");
+export function queueExtraction(ids: string[], single = false) {
+  const valid = extractionIds.parse(ids);
+  return db
+    .transaction(() => {
+      for (const id of valid) {
+        if (!db.prepare("SELECT 1 FROM passages WHERE video_id=?").get(id))
+          throw new Error("Import a transcript before analysis");
+        if (
+          db
+            .prepare(
+              "SELECT 1 FROM videos WHERE id=? AND status='extracted' UNION SELECT 1 FROM opinions WHERE video_id=?",
+            )
+            .get(id, id)
+        )
+          throw new Error(
+            "This transcript has already been analyzed; review its opinions instead",
+          );
+        if (
+          db
+            .prepare(
+              "SELECT 1 FROM jobs j WHERE j.status IN ('queued','running') AND ((j.type='extract' AND json_extract(j.payload,'$.id')=?) OR (j.type='extract_batch' AND EXISTS(SELECT 1 FROM json_each(j.payload,'$.ids') WHERE value=?)))",
+            )
+            .get(id, id)
+        )
+          throw new Error("Transcript analysis is already queued or running");
+      }
+      return queue(
+        single ? "extract" : "extract_batch",
+        single ? { id: valid[0] } : { ids: valid },
+      );
+    })
+    .immediate();
+}
+export function videos() {
+  return db
+    .prepare(
+      `SELECT v.*,
+    (SELECT COUNT(*) FROM passages WHERE video_id=v.id) passage_count,
+    (SELECT COUNT(*) FROM opinions WHERE video_id=v.id) opinion_count,
+    (SELECT COUNT(*) FROM opinions WHERE video_id=v.id AND status='pending') pending_count,
+    CASE WHEN EXISTS(SELECT 1 FROM jobs j WHERE status IN ('queued','running') AND ((type='extract' AND json_extract(payload,'$.id')=v.id) OR (type='extract_batch' AND EXISTS(SELECT 1 FROM json_each(j.payload,'$.ids') WHERE value=v.id)))) THEN 'Analyzing'
+    WHEN v.content_hash IS NULL THEN 'Captions missing'
+    WHEN EXISTS(SELECT 1 FROM opinions WHERE video_id=v.id AND status='pending') THEN 'Needs review'
+    WHEN v.status='extracted' OR EXISTS(SELECT 1 FROM opinions WHERE video_id=v.id) THEN 'Reviewed'
+    WHEN v.error IS NOT NULL THEN 'Analysis failed'
+    ELSE 'Ready to analyze' END analysis_state
+    FROM videos v ORDER BY published_at DESC LIMIT 200`,
+    )
+    .all();
+}
+export async function analyzeBatch(
+  ids: string[],
+  progress: (s: string) => void,
+  analyze = extractVideo,
+) {
+  extractionIds.parse(ids);
+  let successful = 0,
+    failed = 0;
+  const errors: string[] = [];
+  for (const id of ids) {
+    progress(
+      `${successful} successful, ${failed} failed, ${ids.length - successful - failed} remaining; analyzing ${id}`,
+    );
+    try {
+      await analyze(id);
+      db.prepare("UPDATE videos SET error=NULL WHERE id=?").run(id);
+      successful++;
+    } catch (e) {
+      failed++;
+      const message = e instanceof Error ? e.message : String(e);
+      db.prepare("UPDATE videos SET error=? WHERE id=?").run(message, id);
+      errors.push(`${id}: ${message}`);
+      if (
+        (e instanceof OpenAI.APIError &&
+          [401, 403, 429].includes(e.status || 0)) ||
+        /monthly .*budget|Set OLLAMA_API_KEY/i.test(message)
+      )
+        break;
+    }
+  }
+  const result = `${successful} successful, ${failed} failed, ${ids.length - successful - failed} unprocessed`;
+  progress(result);
+  if (errors.length) throw new Error(result + "; " + errors.join("; "));
+  const count = (
+    db
+      .prepare(
+        `SELECT COUNT(*) n FROM opinions WHERE video_id IN (${ids.map(() => "?").join(",")})`,
+      )
+      .get(...ids) as { n: number }
+  ).n;
+  return (
+    result +
+    (count
+      ? `; ${count} supported opinions await review`
+      : "; No supported opinions found")
+  );
+}
 export function queueDiscovery(sourceId: number, time = Date.now()) {
   return db
     .transaction(() => {
@@ -215,16 +319,6 @@ export async function discover(
         );
       }).immediate();
       captionCount++;
-      if (aiSettings().configured) {
-        try {
-          await extractVideo(v.id);
-        } catch (e) {
-          db.prepare("UPDATE videos SET error=? WHERE id=?").run(
-            String(e instanceof Error ? e.message : e),
-            v.id,
-          );
-        }
-      }
     } catch (e) {
       db.prepare(
         "UPDATE videos SET status='needs_transcript',error=? WHERE id=?",
@@ -267,18 +361,14 @@ export async function runJob(job: {
     progress(
       r.duplicate ? "Existing transcript preserved" : "Transcript saved",
     );
-    if (aiSettings().configured) {
-      await extractVideo(r.id);
-      return "Transcript imported; extracted opinions await review";
-    }
     return r.duplicate
       ? "Duplicate skipped"
-      : "Transcript imported. Add an API key to extract opinions.";
+      : "Transcript imported. Ready to analyze when you choose.";
   }
-  if (job.type === "extract") {
-    await extractVideo(p.id);
-    return "Opinions extracted and awaiting review";
+  if (job.type === "extract" || job.type === "extract_batch") {
+    return analyzeBatch(job.type === "extract" ? [p.id] : p.ids, progress);
   }
+
   if (job.type === "discover") {
     try {
       const result = await discover(p.source_id, progress);

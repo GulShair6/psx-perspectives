@@ -28,7 +28,7 @@ export async function askJson<T>(
   maxOutput ??= ollama ? 4096 : 2400;
   if (!settings.configured)
     throw new Error(
-      "Set OLLAMA_API_KEY or OPENAI_API_KEY in .env.local to enable extraction and research answers. Your imported evidence is saved.",
+      "Set OLLAMA_API_KEY or OPENAI_API_KEY in .env to enable extraction and research answers. Your imported evidence is saved.",
     );
   const content = JSON.stringify(input);
   if (Buffer.byteLength(content) > 70_000)

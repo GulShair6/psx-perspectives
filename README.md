@@ -8,13 +8,13 @@ Requires Node.js 22.13+ and npm. Linux systems without a compatible SQLite prebu
 
 ```sh
 npm ci
-cp .env.example .env.local
+cp .env.example .env
 npm run dev
 ```
 
 Open http://127.0.0.1:3000. One command starts the Next.js application and a separate ingestion worker. Ctrl+C stops both. Keep all dependencies installed: the worker uses `tsx` in development and production.
 
-Optional: enter `OLLAMA_API_KEY` (Ollama Cloud) or `OPENAI_API_KEY` (OpenAI) in `.env.local` and restart. Never put the key in a browser input or commit it. Without a key, company refreshes, comparisons, watchlists, transcript imports, exports and classification review work; AI extraction and research answers require the key.
+Optional: enter `OLLAMA_API_KEY` (Ollama Cloud) or `OPENAI_API_KEY` (OpenAI) in `.env` and restart. Never put the key in a browser input or commit it. Without a key, company refreshes, comparisons, watchlists, transcript imports, exports and classification review work; AI extraction and research answers require the key. Both app and worker load `.env`, then optional `.env.local`; inherited environment variables take precedence.
 
 ```sh
 npm run build
@@ -37,11 +37,11 @@ Production also starts both processes and binds to localhost. This application h
 - The live PSX proof validates symbols against each page title before saving its quote. Prices, financial summaries, ratios and announcement links are parsed from official pages. Observations retain retrieval times, quote dates, reporting periods, units and source URLs. Financial summaries may be standardized by PSX's data supplier; the P/E quote is based on unconsolidated financials.
 - Displayed 1Y price returns exclude payouts. Debt/equity, ROE and dividend yield are not inferred when absent. The payout endpoint can fail or change; these failures are recorded in company notes, with no synthetic fallback.
 - Source verification checks that the channel ID appears on the configured official page. The pilot SCS and PSX IDs were found on official sites. InvestKaar is seeded but unresolved and will fail discovery until a valid channel page/identity is supplied. This is identity provenance, not a claim of investment expertise.
-- Automatic collection does not need an OpenAI key. Enable or pause each source in Settings; last check, next check, and source errors appear in Video library. Only one queued/running discovery job per channel is allowed, including manual checks and retries. YouTube rate blocks stop the current batch instead of repeatedly hitting a blocked endpoint. Automation stops when the local worker is stopped.
+- Automatic collection does not need an OpenAI key. Enable or pause each source in Settings; last check, next check, and source errors appear in Transcripts. Only one queued/running discovery job per channel is allowed, including manual checks and retries. YouTube rate blocks stop the current batch instead of repeatedly hitting a blocked endpoint. Automation stops when the local worker is stopped.
 - Channel RSS discovery is capped at ten relevant videos from the preceding 90 days. RSS feeds contain recent uploads, so a complete 90-day historical archive is not promised.
 - Captions can be missing or blocked. Both classic second timestamps and srv3 millisecond timestamps are normalized. Manual transcript imports are the supported fallback; no audio is downloaded. Plain transcripts receive video citations without fabricated timestamps.
 - Shariah status stays unverified unless you review a dated official PSX classification in Settings. Entries older than 180 days are excluded from the compliant filter. This freshness rule is a research convention, not a certification.
-- The interface and evidence storage are local. Selected evidence is sent to OpenAI for extraction and answers. AI evidence is treated as untrusted text; it cannot execute tools or modify your database through instructions in a transcript.
+- The interface and evidence storage are local. Selected evidence is sent to the configured provider (Ollama Cloud or OpenAI) for extraction and answers. AI evidence is treated as untrusted text; it cannot execute tools or modify your database through instructions in a transcript.
 - Budget is **US$10 per calendar month in Asia/Karachi**, covering this application's calls only. Transactions reserve worst-case input/output costs before calls, and usage reconciles afterward. Ollama Cloud takes priority when its key is configured, using fixed model `gemma4:31b` ($0.14/million input and $0.40/million output tokens in credit usage); otherwise OpenAI uses `gpt-4.1-mini` ($0.40/million input and $1.60/million output tokens). There is no automatic fallback between providers. Ollama free accounts have limited starter credits: the app cannot inspect your account credit balance or guarantee zero account charges if you have purchased credits. Keep paid usage disabled in your Ollama account to stay within the free allowance. No credits or subscription are purchased by this app. Review these assumptions if provider pricing changes. Automatic SDK retries are disabled. Definite rejected requests release reservations; ambiguous failures retain them. This is not an account-wide provider billing cap. Ollama Cloud does not enforce structured-output schemas; the schema is included in the prompt, and JSON, evidence, quote and citation validation still reject invalid responses. See [Ollama cloud docs](https://docs.ollama.com/cloud), [structured-output limits](https://docs.ollama.com/capabilities/structured-outputs), and [pricing](https://ollama.com/pricing).
 - PSX and YouTube source content is not covered by this code's MIT license. Review source access terms for your intended use; do not publicly redistribute market data without the required rights. No PSX Alpha code was copied.
 
@@ -95,3 +95,11 @@ All endpoints live under `/api`, use the Node runtime and are restricted to loca
 - `POST /api/retry`: `{id: failedJobId}`; queue a new attempt without deleting previous evidence or history.
 
 No NestJS, graph database, automated transcription, overall stock rankings or broker integration.
+
+## Daily research workflow
+
+Start with My research desk. Your watchlist opens by default when populated; the section, filter and four-company selection persist in this browser. Source price dates and retrieval times are separate; cached observations older than 48 hours show Refresh due. Use the comparison tray to compare or ask about the selected companies, and open citations to inspect saved evidence.
+
+Captions collect automatically while the worker runs. AI analysis is user-triggered: Transcripts offers source/status filters, previews, per-video analysis, and Analyze ready transcripts (newest ten). Batch progress stays visible in the current screen. Invalid extractions fail visibly; quota, authentication or budget failures stop the batch and leave remaining transcripts unprocessed. Review each supported opinion against the original passage; Save and next continues to the next pending review. No supported opinions found is a completed analysis, not an approved recommendation.
+
+`POST /api/extract-batch` accepts `{ids: string[]}` (one to ten unique saved video IDs) and returns `{job: number}`. `GET /api/video?id=VIDEO_ID` returns saved video metadata and timestamped passages. Single and batch analysis cannot overlap for a video. Both interfaces retain the localhost and input-validation restrictions.

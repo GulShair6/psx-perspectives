@@ -1,7 +1,7 @@
 "use client";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useState } from "react";
 import { today } from "@/lib/time";
-import type { Company, Opinion, Table, Citation } from "@/lib/types";
+import type { Company, Opinion, Table, Citation, Evidence } from "@/lib/types";
 type Source = {
   id: number;
   name: string;
@@ -22,6 +22,10 @@ type Video = {
   url: string;
   status: string;
   error: string | null;
+  source_id: number | null;
+  analysis_state: string;
+  opinion_count: number;
+  pending_count: number;
 };
 type Job = {
   id: number;
@@ -59,14 +63,9 @@ type Answer = {
   interpretation: string;
   gaps: string[];
   citations: Citation[];
+  evidence: Evidence[];
 };
-const tabs = [
-  "Research",
-  "Video library",
-  "Opinion review",
-  "Activity",
-  "Settings",
-];
+const tabs = ["Research", "Transcripts", "Review", "Activity", "Settings"];
 const fmt = (n: number | null | undefined, d = 2) =>
   n == null ? "—" : n.toLocaleString("en-GB", { maximumFractionDigits: d });
 const date = (s: string | null | undefined) =>
@@ -147,7 +146,7 @@ export default function Desk() {
     [answer, setAnswer] = useState<Answer | null>(null),
     [asking, setAsking] = useState(false);
   const [search, setSearch] = useState(""),
-    [filter, setFilter] = useState("all"),
+    [filter, setFilter] = useState("auto"),
     [sort, setSort] = useState("symbol"),
     [descending, setDescending] = useState(false),
     [selected, setSelected] = useState<string[]>([]),
@@ -157,14 +156,95 @@ export default function Desk() {
     );
   const [review, setReview] = useState<Opinion | null>(null),
     [source, setSource] = useState<Source | null>(null);
+  const [loadError, setLoadError] = useState(""),
+    [chatError, setChatError] = useState("");
+  const [lastJob, setLastJob] = useState<number | null>(null);
+  const [videoFilter, setVideoFilter] = useState("all"),
+    [sourceFilter, setSourceFilter] = useState("all");
+  const [preview, setPreview] = useState<{
+    video: Video;
+    passages: { id: number; start_seconds: number | null; text: string }[];
+  } | null>(null);
+  const [evidencePreview, setEvidencePreview] = useState<Evidence | null>(null);
+  const [reviewPassage, setReviewPassage] = useState("");
+  const [preferencesLoaded, setPreferencesLoaded] = useState(false);
+  useEffect(() => {
+    try {
+      const p = JSON.parse(
+        localStorage.getItem("psx-desk-preferences") || "{}",
+      );
+      if (tabs.includes(p.tab)) setTab(p.tab);
+      if (["all", "watchlist", "shariah"].includes(p.filter))
+        setFilter(p.filter);
+      if (Array.isArray(p.selected))
+        setSelected(
+          [
+            ...new Set(
+              p.selected.filter(
+                (v: unknown) =>
+                  typeof v === "string" &&
+                  /^(OGDC|PPL|POL|FFC|EFERT|LUCK|HUBC|MEBL|MCB|SYS)$/.test(v),
+              ),
+            ),
+          ].slice(0, 4) as string[],
+        );
+    } catch {}
+    setPreferencesLoaded(true);
+  }, []);
+  useEffect(() => {
+    if (!preferencesLoaded || filter === "auto") return;
+    try {
+      localStorage.setItem(
+        "psx-desk-preferences",
+        JSON.stringify({ tab, filter, selected }),
+      );
+    } catch {}
+  }, [preferencesLoaded, tab, filter, selected]);
+  useEffect(() => {
+    if (state && preferencesLoaded && filter === "auto")
+      setFilter(state.companies.some((c) => c.watched) ? "watchlist" : "all");
+  }, [state, preferencesLoaded, filter]);
+  useEffect(() => {
+    if (!review) return;
+    const controller = new AbortController();
+    setReviewPassage("Loading original passage…");
+    fetch(`/api/video?id=${review.video_id}`, { signal: controller.signal })
+      .then(async (r) => {
+        const d = await r.json();
+        if (!r.ok) throw new Error(d.error);
+        setReviewPassage(
+          d.passages.find((p: { id: number }) => p.id === review.passage_id)
+            ?.text || "Original passage unavailable.",
+        );
+      })
+      .catch((e) => {
+        if (!controller.signal.aborted)
+          setReviewPassage(
+            "Could not load the original passage. Close and reopen to retry.",
+          );
+      });
+    return () => controller.abort();
+  }, [review]);
+  async function openTranscript(id: string) {
+    setError("");
+    try {
+      const r = await fetch(`/api/video?id=${id}`);
+      const d = await r.json();
+      if (!r.ok) throw new Error(d.error);
+      setPreview(d);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Could not load transcript");
+    }
+  }
   const refresh = useCallback(async () => {
     try {
       const r = await fetch(`/api/state?since=${since}`);
       const value = await r.json();
       if (!r.ok) throw new Error(value.error);
       setState(value);
+      setLoadError("");
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Could not load research");
+      setLoadError(e instanceof Error ? e.message : "Could not load research");
     }
   }, [since]);
   useEffect(() => {
@@ -172,8 +252,8 @@ export default function Desk() {
     const t = setInterval(refresh, 2500);
     return () => clearInterval(t);
   }, [refresh]);
-  useEffect(() => {
-    if (!review && !source) return;
+  useLayoutEffect(() => {
+    if (!review && !source && !preview && !evidencePreview) return;
     const previous = document.activeElement as HTMLElement | null;
     const modal = document.querySelector<HTMLElement>(".modal");
     const focusable = () =>
@@ -187,6 +267,8 @@ export default function Desk() {
       if (e.key === "Escape") {
         setReview(null);
         setSource(null);
+        setPreview(null);
+        setEvidencePreview(null);
       }
       if (e.key === "Tab") {
         const items = focusable(),
@@ -206,7 +288,7 @@ export default function Desk() {
       document.removeEventListener("keydown", keys);
       previous?.focus();
     };
-  }, [review, source]);
+  }, [review, source, preview, evidencePreview]);
   async function action(path: string, input: unknown) {
     setPending(true);
     setError("");
@@ -219,9 +301,10 @@ export default function Desk() {
       });
       const data = await r.json();
       if (!r.ok) throw new Error(data.error);
+      if (data.job) setLastJob(data.job);
       setNotice(
         data.job
-          ? `Job #${data.job} queued. Follow progress in Activity.`
+          ? `Job #${data.job} queued. Progress appears below.`
           : "Saved.",
       );
       await refresh();
@@ -236,7 +319,7 @@ export default function Desk() {
   async function chat(e: React.FormEvent) {
     e.preventDefault();
     setAsking(true);
-    setError("");
+    setChatError("");
     setAnswer(null);
     try {
       const r = await fetch("/api/chat", {
@@ -248,7 +331,7 @@ export default function Desk() {
       if (!r.ok) throw new Error(result.error);
       setAnswer(result);
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Research failed");
+      setChatError(e instanceof Error ? e.message : "Research failed");
     } finally {
       setAsking(false);
     }
@@ -289,6 +372,40 @@ export default function Desk() {
   }
   const pendingReviews =
     state?.opinions.filter((o) => o.status === "pending").length || 0;
+  const ready =
+    state?.videos
+      .filter((v) => v.analysis_state === "Ready to analyze")
+      .slice(0, 10) || [];
+  const due =
+    state?.companies.filter(
+      (c) =>
+        !c.retrieved_at ||
+        Date.now() - Date.parse(c.retrieved_at) > 48 * 3600000,
+    ) || [];
+  const currentJob = state?.jobs.find((j) => j.id === lastJob);
+  const visibleVideos =
+    state?.videos.filter(
+      (v) =>
+        (videoFilter === "all" || v.analysis_state === videoFilter) &&
+        (sourceFilter === "all" || String(v.source_id) === sourceFilter),
+    ) || [];
+  const approvedContext =
+    state?.opinions.filter(
+      (o) =>
+        o.status === "approved" &&
+        !o.hypothetical &&
+        o.published_at >= since &&
+        (!selected.length || selected.includes(o.symbol)),
+    ).length || 0;
+  function focusResearch(target: string) {
+    setTab("Research");
+    setDetail(null);
+    requestAnimationFrame(() =>
+      document
+        .getElementById(target)
+        ?.scrollIntoView({ behavior: "auto", block: "start" }),
+    );
+  }
   return (
     <div className="desk">
       <aside className="sidebar">
@@ -317,7 +434,7 @@ export default function Desk() {
                 {["▦", "▤", "✓", "◷", "⚙"][i]}
               </span>
               {t}
-              {t === "Opinion review" && pendingReviews > 0 && (
+              {t === "Review" && pendingReviews > 0 && (
                 <span className="count">{pendingReviews}</span>
               )}
             </button>
@@ -358,6 +475,66 @@ export default function Desk() {
           </div>
         </header>
         <div className="content">
+          {loadError && (
+            <div className="alert danger" role="alert">
+              Connection interrupted. Saved content remains visible.{" "}
+              <button onClick={() => refresh()}>Retry connection</button>
+              <small>{loadError}</small>
+            </div>
+          )}
+          {currentJob && (
+            <div
+              className={`alert ${currentJob.status === "failed" ? "danger" : ""}`}
+              role="status"
+            >
+              <strong>
+                Job #{currentJob.id}: {currentJob.status}
+              </strong>
+              <span>{currentJob.progress}</span>
+              {currentJob.error && <p>{currentJob.error}</p>}
+              {currentJob.status === "failed" && (
+                <button
+                  disabled={pending}
+                  onClick={() => action("retry", { id: currentJob.id })}
+                >
+                  {currentJob.type === "extract" ||
+                  currentJob.type === "extract_batch"
+                    ? "Retry failed or unprocessed analysis"
+                    : "Retry job"}
+                </button>
+              )}
+            </div>
+          )}
+          {tab === "Research" && selected.length > 0 && (
+            <div className="comparison-tray" aria-label="Comparison selection">
+              <strong>{selected.length}/4 selected</strong>
+              {selected.map((symbol) => (
+                <button
+                  key={symbol}
+                  className="secondary"
+                  aria-label={`Remove ${symbol} from comparison`}
+                  onClick={() => toggle(symbol)}
+                >
+                  {symbol} ×
+                </button>
+              ))}
+              <button onClick={() => setSelected([])}>Clear</button>
+              <button onClick={() => focusResearch("comparison")}>
+                Compare
+              </button>
+              <button
+                className="primary"
+                onClick={() => {
+                  focusResearch("research-chat");
+                  requestAnimationFrame(() =>
+                    document.getElementById("question")?.focus(),
+                  );
+                }}
+              >
+                Ask about selection
+              </button>
+            </div>
+          )}
           {error && (
             <div className="alert danger" role="alert">
               {error}
@@ -377,17 +554,17 @@ export default function Desk() {
                 {company
                   ? company.symbol
                   : tab === "Research"
-                    ? "A clearer view of your next investment."
+                    ? "My research desk"
                     : tab}
               </h1>
               <p>
                 {company
                   ? company.name
                   : tab === "Research"
-                    ? "Compare the companies. Understand the opinions. Follow the evidence."
-                    : tab === "Video library"
+                    ? "Start with your watchlist. Compare companies and inspect the evidence."
+                    : tab === "Transcripts"
                       ? "Build a dated library of the voices you follow."
-                      : tab === "Opinion review"
+                      : tab === "Review"
                         ? "Check the original passage before accepting an expert’s view."
                         : tab === "Activity"
                           ? "Refreshes, imports and extraction jobs, with failures kept visible."
@@ -419,37 +596,38 @@ export default function Desk() {
             <>
               {tab === "Research" && !detail && (
                 <>
-                  <div className="summary-strip">
-                    <div>
-                      <strong>
-                        {state.companies.filter((c) => c.snapshot).length}
-                        <span>/ 10</span>
-                      </strong>
-                      <span>Companies with saved data</span>
-                    </div>
-                    <div>
-                      <strong>{state.videos.length}</strong>
-                      <span>Videos in your library</span>
-                    </div>
-                    <div>
-                      <strong>
-                        {
-                          state.opinions.filter((o) => o.status === "approved")
-                            .length
-                        }
-                      </strong>
-                      <span>Reviewed expert views</span>
-                    </div>
-                    <div>
-                      <strong>
-                        {state.gate.reviewed}
-                        <span>/ 30</span>
-                      </strong>
-                      <span>
-                        Extraction checks{state.gate.enabled ? " · passed" : ""}
-                      </span>
-                    </div>
+                  <div className="status-strip" aria-label="Research status">
+                    <button
+                      disabled={pending || !due.length}
+                      onClick={() =>
+                        action("refresh", { symbols: due.map((c) => c.symbol) })
+                      }
+                    >
+                      {due.length} refresh due
+                    </button>
+                    <button onClick={() => setTab("Transcripts")}>
+                      {
+                        state.videos.filter(
+                          (v) => v.analysis_state === "Ready to analyze",
+                        ).length
+                      }{" "}
+                      transcripts ready to analyze
+                    </button>
+                    <button onClick={() => setTab("Review")}>
+                      {pendingReviews} pending reviews
+                    </button>
+                    {!state.workerOnline && (
+                      <button onClick={() => setTab("Activity")}>
+                        Worker offline — start the app to process jobs
+                      </button>
+                    )}
                   </div>
+                  {!state.companies.some((c) => c.watched) && (
+                    <p className="watchlist-prompt">
+                      Add companies to your watchlist using the star beside each
+                      company.
+                    </p>
+                  )}
                   <div className="research-grid">
                     <section className="panel scorecard">
                       <div className="panel-header">
@@ -519,6 +697,22 @@ export default function Desk() {
                                   >
                                     {c.symbol}
                                     <span>{c.name}</span>
+                                    <small>
+                                      Retrieved: {date(c.retrieved_at)}
+                                    </small>
+                                    <small>
+                                      Price date:{" "}
+                                      {c.snapshot?.priceDate || "Unavailable"}
+                                    </small>
+                                    {(!c.retrieved_at ||
+                                      Date.now() - Date.parse(c.retrieved_at) >
+                                        48 * 3600000) && (
+                                      <small className="negative">
+                                        {c.retrieved_at
+                                          ? "Refresh due"
+                                          : "No saved evidence"}
+                                      </small>
+                                    )}
                                   </button>
                                 </td>
                                 <td>{fmt(c.snapshot?.price)}</td>
@@ -528,7 +722,13 @@ export default function Desk() {
                                     <span className="unit">x</span>
                                   )}
                                 </td>
-                                <td>{fmt(metric(c, "eps"))}</td>
+                                <td>
+                                  {fmt(metric(c, "eps"))}
+                                  <small className="metric-period">
+                                    {c.snapshot?.annual.periods[0] ||
+                                      "Period unavailable"}
+                                  </small>
+                                </td>
                                 <td
                                   className={
                                     (c.snapshot?.priceReturn ?? 0) < 0
@@ -573,7 +773,7 @@ export default function Desk() {
                         source dates are available on each company page.
                       </div>
                     </section>
-                    <section className="panel chat-panel">
+                    <section className="panel chat-panel" id="research-chat">
                       <div className="panel-header">
                         <div>
                           <span className="assistant-mark" aria-hidden="true">
@@ -605,7 +805,7 @@ export default function Desk() {
                             <div className="evidence-note">
                               {state.aiConfigured
                                 ? "AI is connected. Only relevant saved evidence is sent to the provider."
-                                : "Connect an OpenAI API key in .env.local to enable AI. Company research and imports work without it."}
+                                : "Connect an OpenAI API key in .env to enable AI. Company research and imports work without it."}
                             </div>
                           </>
                         )}
@@ -630,14 +830,19 @@ export default function Desk() {
                                           );
                                           return (
                                             c && (
-                                              <a
+                                              <button
                                                 key={id}
-                                                href={c.url}
-                                                target="_blank"
-                                                rel="noreferrer"
+                                                className="text-button"
+                                                onClick={() => {
+                                                  const e =
+                                                    answer.evidence.find(
+                                                      (e) => e.id === id,
+                                                    );
+                                                  if (e) setEvidencePreview(e);
+                                                }}
                                               >
                                                 {c.label}
-                                              </a>
+                                              </button>
                                             )
                                           );
                                         })}
@@ -663,6 +868,31 @@ export default function Desk() {
                           </div>
                         )}
                       </div>
+                      {chatError && (
+                        <div className="alert danger" role="alert">
+                          {chatError}
+                          <button
+                            aria-label="Dismiss chat error"
+                            onClick={() => setChatError("")}
+                          >
+                            ×
+                          </button>
+                          <small>
+                            Evidence is preserved. Check the selected context or
+                            provider settings, then retry.
+                          </small>
+                        </div>
+                      )}
+                      <p className="context-summary">
+                        Companies:{" "}
+                        {selected.join(", ") || "Detected from your question"}.
+                        Evidence since {date(since)}. {approvedContext} approved
+                        opinions{" "}
+                        {selected.length
+                          ? "in this selection"
+                          : "in the library"}
+                        .
+                      </p>
                       <form className="chat-form" onSubmit={chat}>
                         <label htmlFor="question">
                           {selected.length
@@ -686,7 +916,7 @@ export default function Desk() {
                       </form>
                     </section>
                   </div>
-                  <section className="panel compare">
+                  <section className="panel compare" id="comparison">
                     <div className="panel-header">
                       <div>
                         <h2>Side by side</h2>
@@ -716,7 +946,17 @@ export default function Desk() {
                               ].map(([k, l]) => (
                                 <div key={k}>
                                   <dt>{l}</dt>
-                                  <dd>{fmt(metric(c, k))}</dd>
+                                  <dd>
+                                    {fmt(metric(c, k))}
+                                    {["eps", "margin"].includes(k) && (
+                                      <small className="metric-period">
+                                        {(k === "eps"
+                                          ? c.snapshot?.annual.periods[0]
+                                          : c.snapshot?.ratios.periods[0]) ||
+                                          "Period unavailable"}
+                                      </small>
+                                    )}
+                                  </dd>
                                 </div>
                               ))}
                               <div>
@@ -798,7 +1038,7 @@ export default function Desk() {
                           </p>
                           <button
                             className="text-button"
-                            onClick={() => setTab("Opinion review")}
+                            onClick={() => setTab("Review")}
                           >
                             Open opinion review
                           </button>
@@ -847,10 +1087,10 @@ export default function Desk() {
                   </div>
                   {company.retrieved_at &&
                     Date.now() - Date.parse(company.retrieved_at) >
-                      3 * 86400000 && (
+                      2 * 86400000 && (
                       <div className="alert">
-                        This snapshot is more than three days old. Refresh
-                        before relying on its quote.
+                        Refresh due: this snapshot is more than 48 hours old.
+                        Refresh before relying on its quote.
                       </div>
                     )}
                   {company.snapshot ? (
@@ -952,7 +1192,7 @@ export default function Desk() {
                   </section>
                 </>
               )}
-              {tab === "Video library" && (
+              {tab === "Transcripts" && (
                 <div className="library-grid">
                   <section className="panel padded">
                     <h2>Import a transcript</h2>
@@ -1072,13 +1312,65 @@ export default function Desk() {
                   </section>
                   <section>
                     <div className="panel padded">
-                      <h2>Your video library</h2>
+                      <h2>Your transcripts</h2>
+                      <div className="toolbar">
+                        <select
+                          aria-label="Filter transcripts by source"
+                          value={sourceFilter}
+                          onChange={(e) => setSourceFilter(e.target.value)}
+                        >
+                          <option value="all">All sources</option>
+                          {state.sources.map((s) => (
+                            <option key={s.id} value={s.id}>
+                              {s.name}
+                            </option>
+                          ))}
+                          <option value="null">Imported without channel</option>
+                        </select>
+                        <select
+                          aria-label="Filter transcripts by status"
+                          value={videoFilter}
+                          onChange={(e) => setVideoFilter(e.target.value)}
+                        >
+                          <option value="all">All statuses</option>
+                          {[
+                            "Captions missing",
+                            "Ready to analyze",
+                            "Analyzing",
+                            "Needs review",
+                            "Reviewed",
+                            "Analysis failed",
+                          ].map((v) => (
+                            <option key={v}>{v}</option>
+                          ))}
+                        </select>
+                      </div>
+                      <button
+                        className="primary"
+                        disabled={
+                          pending ||
+                          !ready.length ||
+                          !state.aiConfigured ||
+                          !state.workerOnline
+                        }
+                        onClick={() =>
+                          action("extract-batch", {
+                            ids: ready.map((v) => v.id),
+                          })
+                        }
+                      >
+                        Analyze ready transcripts ({ready.length})
+                      </button>
+                      <p className="muted">
+                        Newest ten ready transcripts per batch. Analysis uses
+                        cloud credits; opinions need review.{" "}
+                        {!state.aiConfigured &&
+                          "Configure the AI key in Settings first."}
+                      </p>
                       {state.videos.length ? (
-                        state.videos.map((v) => (
+                        visibleVideos.map((v) => (
                           <article className="video" key={v.id}>
-                            <span className="badge">
-                              {v.status.replaceAll("_", " ")}
-                            </span>
+                            <span className="badge">{v.analysis_state}</span>
                             <h3>
                               <a href={v.url} target="_blank" rel="noreferrer">
                                 {v.title} ↗
@@ -1088,13 +1380,36 @@ export default function Desk() {
                               {v.speaker} · {date(v.published_at)}
                             </p>
                             {v.error && <p className="negative">{v.error}</p>}
-                            {v.status === "imported" && (
+                            <button
+                              className="text-button"
+                              onClick={() => openTranscript(v.id)}
+                            >
+                              Preview transcript
+                            </button>
+                            {v.status === "extracted" && !v.opinion_count && (
+                              <p>No supported opinions found.</p>
+                            )}
+                            {v.analysis_state === "Needs review" && (
                               <button
                                 className="secondary"
-                                disabled={pending}
+                                onClick={() => setTab("Review")}
+                              >
+                                Review opinions ({v.pending_count})
+                              </button>
+                            )}
+                            {["Ready to analyze", "Analysis failed"].includes(
+                              v.analysis_state,
+                            ) && (
+                              <button
+                                className="secondary"
+                                disabled={
+                                  pending ||
+                                  !state.aiConfigured ||
+                                  !state.workerOnline
+                                }
                                 onClick={() => action("extract", { id: v.id })}
                               >
-                                Extract opinions
+                                Analyze transcript
                               </button>
                             )}
                           </article>
@@ -1104,6 +1419,9 @@ export default function Desk() {
                           No videos yet. Import a transcript or discover videos
                           from a verified source.
                         </div>
+                      )}
+                      {state.videos.length > 0 && !visibleVideos.length && (
+                        <p>No transcripts match these filters.</p>
                       )}
                     </div>
                     <div className="panel padded">
@@ -1153,7 +1471,7 @@ export default function Desk() {
                   </section>
                 </div>
               )}
-              {tab === "Opinion review" && (
+              {tab === "Review" && (
                 <>
                   <div className="alert">
                     Accuracy check: {state.gate.reviewed}/30 assessed ·{" "}
@@ -1298,7 +1616,7 @@ export default function Desk() {
                     <p>
                       {state.aiConfigured
                         ? `${state.aiProvider} configured on the server (${state.aiModel}).`
-                        : "AI key not configured. Set OLLAMA_API_KEY or OPENAI_API_KEY in .env.local and restart."}
+                        : "AI key not configured. Set OLLAMA_API_KEY or OPENAI_API_KEY in .env and restart."}
                     </p>
                     <p>
                       Estimated model usage: ${fmt(state.budget.used)} / $10.
@@ -1411,15 +1729,44 @@ export default function Desk() {
               ×
             </button>
             <h2 id="review-title">Review the original passage</h2>
+            <p>
+              Passage timestamp:{" "}
+              {review.start_seconds == null
+                ? "Not supplied"
+                : `${review.start_seconds}s`}{" "}
+              <a
+                href={
+                  review.start_seconds == null
+                    ? review.url
+                    : review.url + `&t=${Math.floor(review.start_seconds)}`
+                }
+                target="_blank"
+                rel="noreferrer"
+              >
+                Open original video
+              </a>
+            </p>
+            <details open>
+              <summary>Original passage</summary>
+              <p className="passage-text" dir="auto">
+                {reviewPassage}
+              </p>
+            </details>
             <blockquote dir="auto">{review.quote}</blockquote>
             <p className="muted">
               Original extraction: {review.extracted_symbol} ·{" "}
               {review.extracted_stance}
             </p>
             <form
+              key={review.id}
               className="stack"
               onSubmit={async (e) => {
                 e.preventDefault();
+                const nextRequested =
+                  (
+                    (e.nativeEvent as SubmitEvent)
+                      .submitter as HTMLButtonElement | null
+                  )?.value === "next";
                 const f = new FormData(e.currentTarget);
                 const symbol = String(f.get("symbol")),
                   stance = String(f.get("stance"));
@@ -1437,7 +1784,14 @@ export default function Desk() {
                   expected_stance: stance,
                   evaluate: f.get("evaluate") === "on",
                 });
-                if (ok) setReview(null);
+                if (ok)
+                  setReview(
+                    nextRequested
+                      ? state?.opinions.find(
+                          (o) => o.status === "pending" && o.id !== review.id,
+                        ) || null
+                      : null,
+                  );
               }}
             >
               <div className="form-row">
@@ -1506,7 +1860,94 @@ export default function Desk() {
               <button className="primary" disabled={pending}>
                 Save review
               </button>
+              <button
+                className="secondary"
+                name="navigation"
+                value="next"
+                disabled={pending}
+              >
+                Save and next
+              </button>
             </form>
+          </section>
+        </div>
+      )}
+      {(preview || evidencePreview) && (
+        <div className="modal-backdrop">
+          <section
+            className="modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="preview-title"
+          >
+            <button
+              className="close"
+              aria-label="Close preview"
+              onClick={() => {
+                setPreview(null);
+                setEvidencePreview(null);
+              }}
+            >
+              ×
+            </button>
+            <h2 id="preview-title">
+              {preview ? preview.video.title : "Saved evidence"}
+            </h2>
+            {preview && (
+              <>
+                <p>
+                  {preview.video.speaker} · {date(preview.video.published_at)}
+                </p>
+                <a href={preview.video.url} target="_blank" rel="noreferrer">
+                  Open original video
+                </a>
+                {!preview.passages.length && (
+                  <p>
+                    Captions are unavailable. Import a transcript to add
+                    evidence.
+                  </p>
+                )}
+                {preview.passages.map((p) => (
+                  <article key={p.id}>
+                    <strong>
+                      {p.start_seconds == null
+                        ? "Timestamp not supplied"
+                        : `${p.start_seconds}s`}
+                    </strong>
+                    <p className="passage-text" dir="auto">
+                      {p.text}
+                    </p>
+                  </article>
+                ))}
+              </>
+            )}
+            {evidencePreview && (
+              <>
+                <p>
+                  {evidencePreview.id} · {date(evidencePreview.date)}
+                </p>
+                <p>
+                  Timestamp:{" "}
+                  {evidencePreview.start_seconds == null
+                    ? "Not supplied"
+                    : `${evidencePreview.start_seconds}s`}
+                </p>
+                <a
+                  href={
+                    answer?.citations.find(
+                      (c) => c.evidenceId === evidencePreview.id,
+                    )?.url || evidencePreview.url
+                  }
+                  target="_blank"
+                  rel="noreferrer"
+                >
+                  Open original source
+                </a>
+                <pre className="evidence-text" dir="auto">
+                  {evidencePreview.text}
+                </pre>
+              </>
+            )}
           </section>
         </div>
       )}

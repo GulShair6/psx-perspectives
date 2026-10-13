@@ -1,3 +1,4 @@
+import OpenAI from "openai";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -32,6 +33,9 @@ const {
   queueDiscovery,
   scheduleDiscovery,
   DISCOVERY_INTERVAL,
+  queueExtraction,
+  analyzeBatch,
+  videos,
 } = await import("../lib/worker");
 const html = `<title>OGDC - Quote</title><div class="quote__name">Oil &amp; Gas Development Company<div class="tag">XD</div></div><div class="quote__close">Rs.300.39</div><div class="quote__date">As of Oct 12, 2026</div><div class="quote__sector">Energy</div><div class="change__percent">(-1.87%)</div><div class="tabs__panel" data-name="REG"><div class="stats_item"><div class="stats_label">P/E Ratio (TTM) **</div><div class="stats_value">5.33</div></div><div class="stats_item"><div class="stats_label">Volume</div><div class="stats_value">1,929,730</div></div></div><div id="financials"><div class="tabs__panel" data-name="Annual"><table><thead><tr><th></th><th>2026</th><th>2025</th></tr></thead><tbody><tr><td>EPS</td><td>56.35</td><td>-</td></tr></tbody></table></div></div>`;
 let opinionId = 0;
@@ -633,6 +637,147 @@ test("Ollama Cloud uses the server key, validates JSON and accounts for credit u
           .get() as { status: string }
       ).status,
       "released",
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (originalKey === undefined) delete process.env.OLLAMA_API_KEY;
+    else process.env.OLLAMA_API_KEY = originalKey;
+  }
+});
+
+test("batch analysis validates IDs, passages, existing analysis and active overlaps", () => {
+  const ids = ["zzbatch0001", "zzbatch0002"];
+  for (const id of ids)
+    importTranscript({
+      url: `https://www.youtube.com/watch?v=${id}`,
+      title: "Batch fixture",
+      speaker: "Fixture",
+      published_at: "2026-10-01",
+      language: "en",
+      text: "OGDC batch fixture evidence.",
+    });
+  assert.throws(() => queueExtraction([]));
+  assert.throws(() => queueExtraction([ids[0], ids[0]]));
+  assert.throws(() => queueExtraction(["bad"]));
+  assert.throws(() => queueExtraction(["zzbatch9999"]), /transcript/);
+  const job = queueExtraction(ids);
+  assert.equal(
+    (
+      db.prepare("SELECT type FROM jobs WHERE id=?").get(job) as {
+        type: string;
+      }
+    ).type,
+    "extract_batch",
+  );
+  assert.throws(() => queueExtraction([ids[0]], true), /already queued/);
+  assert.equal(
+    (videos() as { id: string; analysis_state: string }[]).find(
+      (v) => v.id === ids[0],
+    )?.analysis_state,
+    "Analyzing",
+  );
+  db.prepare("UPDATE jobs SET status='done' WHERE id=?").run(job);
+  const single = queueExtraction([ids[0]], true);
+  assert.throws(() => queueExtraction(ids), /already queued/);
+  db.prepare("UPDATE jobs SET status='done' WHERE id=?").run(single);
+  db.prepare("UPDATE videos SET status='extracted' WHERE id=?").run(ids[0]);
+  assert.throws(() => queueExtraction([ids[0]]), /already been analyzed/);
+});
+test("batch validation failures continue, quota failures stop, and zero opinions are explicit", async () => {
+  const ids = ["zzbatch0003", "zzbatch0004", "zzbatch0005"];
+  for (const id of ids)
+    importTranscript({
+      url: `https://www.youtube.com/watch?v=${id}`,
+      title: "Batch failure fixture",
+      speaker: "Fixture",
+      published_at: "2026-10-01",
+      language: "en",
+      text: "OGDC fixture evidence.",
+    });
+  const called: string[] = [];
+  const progress: string[] = [];
+  await assert.rejects(
+    analyzeBatch(
+      ids,
+      (s) => progress.push(s),
+      async (id) => {
+        called.push(id);
+        if (id === ids[1]) throw new Error("Unsupported quote");
+        db.prepare("UPDATE videos SET status='extracted' WHERE id=?").run(id);
+      },
+    ),
+    /2 successful, 1 failed, 0 unprocessed/,
+  );
+  assert.deepEqual(called, ids);
+  assert.match(
+    (
+      db.prepare("SELECT error FROM videos WHERE id=?").get(ids[1]) as {
+        error: string;
+      }
+    ).error,
+    /Unsupported quote/,
+  );
+  called.length = 0;
+  await assert.rejects(
+    analyzeBatch(
+      ids,
+      () => {},
+      async (id) => {
+        called.push(id);
+        throw new OpenAI.APIError(
+          429,
+          undefined,
+          "quota exhausted",
+          new Headers(),
+        );
+      },
+    ),
+    /0 successful, 1 failed, 2 unprocessed/,
+  );
+  assert.deepEqual(called, [ids[0]]);
+  const result = await analyzeBatch(
+    [ids[2]],
+    () => {},
+    async (id) => {
+      db.prepare("UPDATE videos SET status='extracted' WHERE id=?").run(id);
+    },
+  );
+  assert.match(result, /No supported opinions found/);
+  assert.equal(
+    (videos() as { id: string; analysis_state: string }[]).find(
+      (v) => v.id === ids[2],
+    )?.analysis_state,
+    "Reviewed",
+  );
+});
+test("importing a transcript never triggers AI analysis even with a configured key", async () => {
+  const originalKey = process.env.OLLAMA_API_KEY;
+  const originalFetch = globalThis.fetch;
+  process.env.OLLAMA_API_KEY = "fixture-key";
+  globalThis.fetch = async () => {
+    throw new Error("Unexpected provider request");
+  };
+  try {
+    const result = await runJob({
+      id: 99999,
+      type: "import",
+      payload: JSON.stringify({
+        url: "https://www.youtube.com/watch?v=zzbatch0006",
+        title: "Import fixture",
+        speaker: "Fixture",
+        published_at: "2026-10-01",
+        language: "en",
+        text: "OGDC fixture evidence.",
+      }),
+    });
+    assert.match(result, /Ready to analyze/);
+    assert.equal(
+      (
+        db
+          .prepare("SELECT status FROM videos WHERE id='zzbatch0006'")
+          .get() as { status: string }
+      ).status,
+      "imported",
     );
   } finally {
     globalThis.fetch = originalFetch;

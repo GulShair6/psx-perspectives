@@ -1,5 +1,6 @@
 import { db, now } from "../lib/db";
 import { claimJob, runJob, scheduleDiscovery } from "../lib/worker";
+import { aiSettings } from "../lib/ai";
 import { randomUUID } from "node:crypto";
 const owner = randomUUID();
 const acquired = db
@@ -33,7 +34,10 @@ for (const signal of ["SIGINT", "SIGTERM"] as const)
     stopping = true;
   });
 async function main() {
-  console.log("PSX ingestion worker ready");
+  const ai = aiSettings();
+  console.log(
+    `PSX ingestion worker ready; ${ai.provider} ${ai.configured ? "configured" : "not configured"}`,
+  );
   let nextScan = 0;
   while (!stopping) {
     if (Date.now() >= nextScan) {

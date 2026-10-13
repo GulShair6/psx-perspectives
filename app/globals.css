@@ -1161,3 +1161,120 @@ footer span {
     scroll-behavior: auto !important;
   }
 }
+
+/* Compact research workflow; status and selections stay near their actions. */
+.page-heading {
+  margin-bottom: 18px;
+  align-items: flex-start;
+}
+.page-heading h1 {
+  font-size: 25px;
+  margin-bottom: 4px;
+}
+.status-strip,
+.comparison-tray {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  background: var(--paper);
+  border-radius: 8px;
+  margin-bottom: 14px;
+}
+.status-strip button {
+  padding: 7px 10px;
+  background: var(--bg);
+  color: var(--ink);
+  border: 1px solid var(--line);
+  border-radius: 5px;
+}
+.comparison-tray {
+  position: sticky;
+  top: 8px;
+  z-index: 5;
+  box-shadow: 0 3px 10px #172e4d12;
+}
+.comparison-tray button {
+  padding: 6px 9px;
+}
+.watchlist-prompt,
+.context-summary {
+  padding: 10px 16px;
+  font-size: 13px;
+  color: var(--muted);
+}
+.stock-table td {
+  vertical-align: top;
+  padding-top: 12px;
+  padding-bottom: 12px;
+}
+.stock-table td:nth-child(n + 3):nth-child(-n + 6),
+.financial td:not(:first-child) {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.stock-table .company-link small {
+  display: block;
+  font-size: 11px;
+  font-weight: 400;
+  color: var(--muted);
+  white-space: normal;
+}
+.metric-period {
+  display: block;
+  font-size: 11px;
+  color: var(--muted);
+}
+#research-chat,
+#comparison {
+  scroll-margin-top: 100px;
+}
+.passage-text,
+.evidence-text {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  line-height: 1.7;
+}
+.evidence-text {
+  font-family: inherit;
+  font-size: 13px;
+}
+.video .text-button {
+  margin-right: 12px;
+}
+.alert > span,
+.alert > small {
+  display: block;
+}
+@media (max-width: 700px) {
+  .comparison-tray {
+    top: 4px;
+    padding: 8px;
+    gap: 5px;
+  }
+  .comparison-tray strong {
+    width: 100%;
+  }
+  .status-strip {
+    gap: 5px;
+  }
+  .status-strip button {
+    flex: 1 1 140px;
+    font-size: 12px;
+  }
+  .toolbar {
+    flex-wrap: wrap;
+  }
+  .toolbar select {
+    max-width: 100%;
+    min-width: 0;
+  }
+  .stock-table td:nth-child(2) {
+    min-width: 180px;
+  }
+  .page-heading h1 {
+    font-size: 23px;
+  }
+}

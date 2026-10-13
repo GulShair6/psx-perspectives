@@ -2,7 +2,9 @@ import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 const production = process.argv.includes("--production");
-const env = existsSync(".env.local") ? ["--env-file=.env.local"] : [];
+const env = [".env", ".env.local"]
+  .filter((file) => existsSync(file))
+  .map((file) => `--env-file=${file}`);
 const children = [
   spawn(
     process.execPath,

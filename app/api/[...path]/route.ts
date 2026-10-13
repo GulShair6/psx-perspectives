@@ -4,7 +4,12 @@ import { z } from "zod";
 import { db, companies, opinions, gate, consensus, queue, now } from "@/lib/db";
 import { budget } from "@/lib/budget";
 import { research, aiSettings } from "@/lib/ai";
-import { queueDiscovery } from "@/lib/worker";
+import {
+  queueDiscovery,
+  queueExtraction,
+  videos,
+  extractionIds,
+} from "@/lib/worker";
 import { recordReview } from "@/lib/transcripts";
 import {
   importSchema,
@@ -74,9 +79,7 @@ export async function GET(
       return response({
         companies: list,
         opinions: opinions(),
-        videos: db
-          .prepare("SELECT * FROM videos ORDER BY published_at DESC LIMIT 200")
-          .all(),
+        videos: videos(),
         sources: db.prepare("SELECT * FROM sources ORDER BY id").all(),
         jobs: db
           .prepare(
@@ -91,6 +94,22 @@ export async function GET(
         workerOnline: !!db
           .prepare("SELECT 1 FROM worker_lock WHERE heartbeat>?")
           .get(Date.now() - 30000),
+      });
+    }
+    if (path === "video") {
+      const id = z
+        .string()
+        .regex(/^[-\w]{11}$/)
+        .parse(request.nextUrl.searchParams.get("id"));
+      const video = db.prepare("SELECT * FROM videos WHERE id=?").get(id);
+      if (!video) return response({ error: "Video not found" }, 404);
+      return response({
+        video,
+        passages: db
+          .prepare(
+            "SELECT id,start_seconds,text FROM passages WHERE video_id=? ORDER BY id",
+          )
+          .all(id),
       });
     }
     if (path === "export") {
@@ -172,9 +191,11 @@ export async function POST(
         .object({ id: z.string().regex(/^[-\w]{11}$/) })
         .strict()
         .parse(input);
-      if (!db.prepare("SELECT 1 FROM passages WHERE video_id=?").get(p.id))
-        throw new Error("Import a transcript before extraction");
-      return response({ job: queue("extract", p) }, 202);
+      return response({ job: queueExtraction([p.id], true) }, 202);
+    }
+    if (path === "extract-batch") {
+      const p = z.object({ ids: extractionIds }).strict().parse(input);
+      return response({ job: queueExtraction(p.ids) }, 202);
     }
     if (path === "discover") {
       const p = z
@@ -291,7 +312,22 @@ export async function POST(
           job:
             old.type === "discover"
               ? queueDiscovery(payload.source_id)
-              : queue(old.type, payload),
+              : old.type === "extract" || old.type === "extract_batch"
+                ? queueExtraction(
+                    (old.type === "extract"
+                      ? [payload.id]
+                      : payload.ids
+                    ).filter(
+                      (id: string) =>
+                        !db
+                          .prepare(
+                            "SELECT 1 FROM videos WHERE id=? AND status='extracted' UNION SELECT 1 FROM opinions WHERE video_id=?",
+                          )
+                          .get(id, id),
+                    ),
+                    old.type === "extract",
+                  )
+                : queue(old.type, payload),
         },
         202,
       );

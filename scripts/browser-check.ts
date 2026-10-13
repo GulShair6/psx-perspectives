@@ -14,6 +14,7 @@ const { db, saveSnapshot, gate } = await import("../lib/db");
 const { importTranscript } = await import("../lib/transcripts");
 // Browser fixtures do not contact external channels; scheduling is tested separately.
 db.prepare("UPDATE sources SET enabled=0").run();
+db.prepare("INSERT INTO watchlist VALUES('MCB')").run();
 const existing = join(process.cwd(), "data", "research.sqlite");
 if (existsSync(existing)) {
   const source = new Database(existing, { readonly: true });
@@ -50,6 +51,9 @@ db.prepare(
   "OGDC",
   "neutral",
 );
+db.prepare(
+  "INSERT INTO opinions(video_id,passage_id,symbol,speaker,stance,rationale,quote,extracted_symbol,extracted_stance) SELECT video_id,passage_id,symbol,'Second test speaker',stance,rationale,quote,extracted_symbol,extracted_stance FROM opinions WHERE video_id=?",
+).run(fixture);
 const env = {
   ...process.env,
   PSX_DB_PATH: path,
@@ -104,6 +108,9 @@ try {
   await expect(
     page.getByRole("heading", { name: "Company scorecard" }),
   ).toBeVisible();
+  await expect(page.getByLabel("Filter companies")).toHaveValue("watchlist");
+  await expect(page.locator(".stock-table tbody tr")).toHaveCount(1);
+  await page.getByLabel("Filter companies").selectOption("all");
   for (const symbol of ["OGDC", "PPL", "FFC", "MEBL"])
     await page
       .getByRole("checkbox", { name: `Compare ${symbol}`, exact: true })
@@ -114,6 +121,18 @@ try {
   await expect(
     page.getByRole("heading", { name: "MEBL", exact: true }),
   ).toBeVisible();
+  await expect(page.getByLabel("Comparison selection")).toContainText(
+    "4/4 selected",
+  );
+  await page.reload();
+  await expect(
+    page.getByRole("checkbox", { name: "Compare OGDC", exact: true }),
+  ).toBeChecked();
+  await page.getByRole("button", { name: "Compare", exact: true }).click();
+  await page
+    .getByRole("button", { name: "Ask about selection", exact: true })
+    .click();
+  await expect(page.locator("#question")).toBeFocused();
   await page
     .getByRole("button", { name: "Add OGDC to watchlist", exact: true })
     .click();
@@ -137,10 +156,75 @@ try {
   await page.getByRole("button", { name: "Ask with sources" }).click();
   await expect(page.locator(".alert.danger")).toContainText("OPENAI_API_KEY");
   expectedApiError = false;
-  await page.getByRole("button", { name: "Dismiss error" }).click();
-  await page
-    .getByRole("button", { name: "Video library", exact: true })
-    .click();
+  await page.getByRole("button", { name: "Dismiss chat error" }).click();
+  // UI-only answer fixture; evidence validation is covered by core tests.
+  await page.route("**/api/chat", (route) =>
+    route.fulfill({
+      json: {
+        facts: [
+          {
+            text: "Saved OGDC company evidence.",
+            evidenceIds: ["company:OGDC"],
+          },
+        ],
+        expertViews: [],
+        interpretation: "Review source context.",
+        gaps: ["Fixture only."],
+        citations: [
+          {
+            evidenceId: "company:OGDC",
+            label: "Inspect OGDC evidence",
+            url: "https://dps.psx.com.pk/company/OGDC",
+          },
+        ],
+        evidence: [
+          {
+            id: "company:OGDC",
+            kind: "company",
+            date: "2026-10-01",
+            url: "https://dps.psx.com.pk/company/OGDC",
+            start_seconds: null,
+            text: "Saved OGDC evidence fixture.",
+          },
+        ],
+      },
+    }),
+  );
+  await page.getByRole("button", { name: "Ask with sources" }).click();
+  await page.getByRole("button", { name: "Inspect OGDC evidence" }).click();
+  await expect(page.getByRole("dialog")).toContainText(
+    "Saved OGDC evidence fixture.",
+  );
+  await expect(
+    page.getByRole("link", { name: "Open original source" }),
+  ).toHaveAttribute("href", "https://dps.psx.com.pk/company/OGDC");
+  await page.keyboard.press("Escape");
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+  let failPolling = false,
+    allowAnalysis = false;
+  await page.route("**/api/state?*", async (route) => {
+    if (failPolling)
+      return route.fulfill({
+        status: 503,
+        json: { error: "Connection fixture" },
+      });
+    const response = await route.fetch();
+    const data = await response.json();
+    if (allowAnalysis) data.aiConfigured = true;
+    await route.fulfill({ response, json: data });
+  });
+  expectedApiError = true;
+  failPolling = true;
+  await expect(
+    page.getByText("Connection interrupted.", { exact: false }),
+  ).toBeVisible({ timeout: 10000 });
+  await expect(page.locator(".stock-table tbody tr")).toHaveCount(10);
+  failPolling = false;
+  await expect(
+    page.getByText("Connection interrupted.", { exact: false }),
+  ).toHaveCount(0, { timeout: 10000 });
+  expectedApiError = false;
+  await page.getByRole("button", { name: "Transcripts", exact: true }).click();
   await expect(
     page.getByRole("heading", { name: "Automatic caption collection" }),
   ).toBeVisible();
@@ -168,9 +252,39 @@ try {
   await expect(
     page.getByRole("heading", { name: "Imported browser test fixture ↗" }),
   ).toBeVisible({ timeout: 15000 });
-  await page.getByRole("button", { name: /^Opinion review/ }).click();
+  const imported = page
+    .locator(".video")
+    .filter({ hasText: "Imported browser test fixture" });
+  await imported.getByRole("button", { name: "Preview transcript" }).click();
+  await expect(page.getByRole("dialog")).toContainText("3s");
+  await expect(page.getByRole("dialog")).toContainText(
+    "OGDC is discussed for this browser test only.",
+  );
+  await page.keyboard.press("Escape");
+  await page
+    .getByLabel("Filter transcripts by status")
+    .selectOption("Ready to analyze");
+  await expect(page.locator(".video")).toHaveCount(1);
+  // Enable the UI fixture only; server has no key and safely reports missing configuration.
+  allowAnalysis = true;
+  await page
+    .getByRole("button", { name: "Analyze ready transcripts (1)" })
+    .click({ timeout: 10000 });
+  await expect(
+    page.getByText("0 successful, 1 failed, 0 unprocessed", { exact: true }),
+  ).toBeVisible({ timeout: 15000 });
+  allowAnalysis = false;
+  await page
+    .getByLabel("Filter transcripts by status")
+    .selectOption("Analysis failed");
+  await expect(page.locator(".video")).toHaveCount(1);
+  await page
+    .getByRole("navigation")
+    .getByRole("button", { name: /^Review/ })
+    .click();
   await page
     .getByRole("button", { name: "Review passage", exact: true })
+    .first()
     .click();
   await page.getByLabel("Correct stance").selectOption("bearish");
   await page
@@ -178,7 +292,21 @@ try {
       "I checked the original passage; use my corrected company and stance as the accuracy reference",
     )
     .check();
-  await page.getByRole("button", { name: "Save review", exact: true }).click();
+  await expect(page.getByRole("dialog").locator(".passage-text")).toContainText(
+    "OGDC is discussed",
+  );
+  await page
+    .getByRole("button", { name: "Save and next", exact: true })
+    .click();
+  await expect(page.getByRole("dialog")).toBeVisible();
+  await expect(page.getByLabel("Speaker", { exact: true })).toHaveValue(
+    "Second test speaker",
+  );
+  await expect(
+    page.getByRole("button", { name: "Close review" }),
+  ).toBeFocused();
+  await page.keyboard.press("Escape");
+  await expect(page.getByRole("dialog")).toHaveCount(0);
   await expect(page.getByText("Extraction needed correction")).toBeVisible();
   assertGate();
   await page.getByRole("button", { name: "Settings", exact: true }).click();
@@ -213,7 +341,7 @@ try {
   expect(rejected.status()).toBe(400);
   await page.getByRole("button", { name: "Activity", exact: true }).click();
   await expect(
-    page.getByText("Transcript imported. Add an API key to extract opinions."),
+    page.getByText("Transcript imported. Ready to analyze when you choose."),
   ).toBeVisible();
   await page.getByRole("button", { name: "Research", exact: true }).click();
   mkdirSync("data/browser-artifacts", { recursive: true });
@@ -236,7 +364,7 @@ try {
   });
   expect(errors).toEqual([]);
   console.log(
-    "Browser checks passed: comparison, watchlist, detail, chat guard, worker import, review correction, source edit, classification filter, export, CSRF, jobs and mobile layout.",
+    "Browser checks passed: watchlist defaults, persisted comparison, chat guard, evidence preview, connection recovery, transcript preview/filter, batch progress, review next/keyboard, source editing, exports and mobile layout.",
   );
 } finally {
   await browser?.close();

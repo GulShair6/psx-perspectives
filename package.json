@@ -5,7 +5,7 @@
   "scripts": {
     "dev": "node scripts/launch.mjs",
     "dev:web": "next dev --hostname 127.0.0.1",
-    "worker": "tsx scripts/worker.ts",
+    "worker": "node --env-file-if-exists=.env --env-file-if-exists=.env.local --import tsx scripts/worker.ts",
     "build": "next build",
     "start": "node scripts/launch.mjs --production",
     "test": "tsx --test tests/*.test.ts",
