@@ -1,7 +1,7 @@
 "use client";
 import { useCallback, useEffect, useState } from "react";
 import { Plus, BookOpen } from "lucide-react";
-import { today } from "@/lib/time";
+import { today, sixMonthsAgo } from "@/lib/time";
 import type { ExpertEvidence } from "@/lib/expert";
 import {
   api,
@@ -49,7 +49,7 @@ export default function ExpertDesk({
     [selected, setSelected] = useState<number[]>([]),
     [profile, setProfile] = useState<number | null>(initialChannel || null);
   const [since, setSince] = useState(
-      today(new Date(Date.now() - 90 * 86400000)),
+      sixMonthsAgo(),
     ),
     [until, setUntil] = useState(today()),
     [symbol, setSymbol] = useState(""),

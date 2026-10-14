@@ -20,6 +20,12 @@ export default function ResearchAnswer({
         <strong>Evidence cutoff:</strong> {date(answer.cutoff)} · AI-generated,
         not human-reviewed
       </p>
+      {answer.coverage && (
+        <p className="muted">
+          {answer.coverage.discovered} discovered videos · {answer.coverage.indexed} indexed · {answer.coverage.missing} missing transcripts · Discovery {answer.coverage.complete ? "complete" : "incomplete"} for this period
+        </p>
+      )}
+      {answer.retrieval?.fallbackReason && <p className="muted">{answer.retrieval.fallbackReason}</p>}
       {(
         [
           ["What was said", answer.whatWasSaid],

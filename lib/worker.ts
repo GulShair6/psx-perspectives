@@ -10,7 +10,8 @@ import { symbolSchema, videoId } from "./validation";
 import OpenAI from "openai";
 import { z } from "zod";
 import { createHash } from "node:crypto";
-import { collectChannel, syncChannel } from "./channels";
+import { collectChannel, syncChannel, extendHistory } from "./channels";
+import { sixMonthsAgo } from "./time";
 import { indexVideo, refreshCatalog } from "./knowledge";
 import { analyzeInsights, scheduleInsights, pipeline } from "./expert";
 export const DISCOVERY_INTERVAL = 6 * 60 * 60 * 1000;
@@ -155,6 +156,7 @@ export function queueDiscovery(sourceId: number, time = Date.now()) {
 }
 
 export function scheduleDiscovery(time = Date.now()) {
+  extendHistory();
   db.transaction(() => {
     const due = db
       .prepare(
@@ -364,7 +366,7 @@ export async function discover(
       `https://www.youtube.com/feeds/videos.xml?channel_id=${channel}`,
     ),
   );
-  const cutoff = new Date(Date.now() - 90 * 86400000).toISOString();
+  const cutoff = new Date(sixMonthsAgo() + "T00:00:00+05:00").toISOString();
   const relevant = entries.filter(
     (v) => v.published_at >= cutoff && v.published_at <= now(),
   );

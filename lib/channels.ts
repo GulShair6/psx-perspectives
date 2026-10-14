@@ -1,7 +1,8 @@
 import { z } from "zod";
 import { db, now, queue } from "./db";
-import { today } from "./time";
+import { today, sixMonthsAgo } from "./time";
 import { windowBounds } from "./knowledge";
+import { EXTRACTION_VERSION } from "./evidence";
 const channelId = z.string().regex(/^UC[\w-]{22}$/);
 export type Channel = {
   id: string;
@@ -128,6 +129,15 @@ export async function followChannel(id: string) {
     .immediate();
   return { source_id: source, job: syncChannel(source) };
 }
+export function extendHistory() {
+  db.transaction(() => {
+    const checkpoints = db.prepare("SELECT source_id,since,until FROM channel_checkpoints WHERE history_version=0 AND NOT EXISTS(SELECT 1 FROM jobs WHERE type='channel_sync' AND status='running' AND json_extract(payload,'$.source_id')=channel_checkpoints.source_id)").all() as {source_id:number; since:string; until:string}[];
+    for (const cp of checkpoints) {
+      const since = sixMonthsAgo(new Date(cp.until + "T12:00:00+05:00"));
+      db.prepare("UPDATE channel_checkpoints SET history_version=1,since=MIN(since,?),page_token=CASE WHEN since>? THEN NULL ELSE page_token END,discovery_complete=CASE WHEN since>? THEN 0 ELSE discovery_complete END,updated_at=? WHERE source_id=?").run(since, since, since, now(), cp.source_id);
+    }
+  }).immediate();
+}
 export function syncChannel(id: number, resume = false) {
   return db
     .transaction(() => {
@@ -140,6 +150,12 @@ export function syncChannel(id: number, resume = false) {
           "SELECT id FROM jobs WHERE type='channel_sync' AND status IN ('queued','running') AND json_extract(payload,'$.source_id')=?",
         )
         .get(id) as { id: number } | undefined;
+      if (active) {
+        db.prepare("UPDATE channel_checkpoints SET paused=0 WHERE source_id=?").run(id);
+        db.prepare("UPDATE sources SET enabled=1 WHERE id=?").run(id);
+        return active.id;
+      }
+      extendHistory();
       db.prepare("UPDATE sources SET enabled=1,next_check_at=? WHERE id=?").run(
         new Date(Date.now() + 6 * 3600000).toISOString(),
         id,
@@ -151,13 +167,13 @@ export function syncChannel(id: number, resume = false) {
         .get(id) as { discovery_complete: number } | undefined;
       if (!checkpoint || (!resume && checkpoint.discovery_complete)) {
         db.prepare(
-          "INSERT INTO channel_checkpoints(source_id,since,until,updated_at) VALUES(?,?,?,?) ON CONFLICT(source_id) DO UPDATE SET since=excluded.since,until=excluded.until,page_token=NULL,discovery_complete=0,paused=0,updated_at=excluded.updated_at",
-        ).run(id, today(new Date(Date.now() - 90 * 86400000)), today(), now());
+          "INSERT INTO channel_checkpoints(source_id,since,until,updated_at,history_version) VALUES(?,?,?,?,1) ON CONFLICT(source_id) DO UPDATE SET since=excluded.since,until=excluded.until,page_token=NULL,discovery_complete=0,paused=0,history_version=1,updated_at=excluded.updated_at",
+        ).run(id, sixMonthsAgo(), today(), now());
       } else
         db.prepare(
           "UPDATE channel_checkpoints SET paused=0 WHERE source_id=?",
         ).run(id);
-      return active?.id || queue("channel_sync", { source_id: id });
+      return queue("channel_sync", { source_id: id });
     })
     .immediate();
 }
@@ -301,18 +317,18 @@ export function channelCoverage() {
     .all() as { id: number; since: string | null; until: string | null }[];
   return sources.map((s) => {
     const [start, end] = windowBounds(
-      s.since || today(new Date(Date.now() - 90 * 86400000)),
+      s.since || sixMonthsAgo(),
       s.until || today(),
     );
     const counts = db
       .prepare(
         `SELECT COUNT(*) discovered,COALESCE(SUM(v.content_hash IS NOT NULL),0) saved,
     COALESCE(SUM(EXISTS(SELECT 1 FROM chunks c WHERE c.video_id=v.id)),0) AS "indexed",
-    COALESCE(SUM(EXISTS(SELECT 1 FROM analysis_runs a WHERE a.video_id=v.id AND a.transcript_hash=v.content_hash AND a.status='done')),0) analyzed,
+    COALESCE(SUM(EXISTS(SELECT 1 FROM analysis_runs a WHERE a.video_id=v.id AND a.transcript_hash=v.content_hash AND a.version=? AND a.status='done')),0) analyzed,
     COALESCE(SUM(v.content_hash IS NULL AND v.caption_attempted_at IS NOT NULL),0) missing
     FROM videos v WHERE v.source_id=? AND julianday(v.published_at)>=julianday(?) AND julianday(v.published_at)<=julianday(?)`,
       )
-      .get(s.id, start, end) as object;
+      .get(EXTRACTION_VERSION, s.id, start, end) as object;
     return { ...s, ...counts };
   });
 }

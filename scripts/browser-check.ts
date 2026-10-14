@@ -14,6 +14,7 @@ delete process.env.OLLAMA_API_KEY;
 delete process.env.YOUTUBE_DATA_API_KEY;
 const { db, saveSnapshot, gate } = await import("../lib/db");
 const { importTranscript } = await import("../lib/transcripts");
+const { EXTRACTION_VERSION } = await import("../lib/evidence");
 // Browser fixtures do not contact external channels; scheduling is tested separately.
 db.prepare("UPDATE sources SET enabled=0").run();
 db.prepare("UPDATE pipeline_state SET catalog_checked_at=? WHERE id=1").run(
@@ -82,7 +83,7 @@ db.prepare(
 ).run(
   expertFixture,
   expertHash,
-  "expert-1",
+  EXTRACTION_VERSION,
   "The fixture discusses OGDC without an investment recommendation.",
   JSON.stringify([
     {
@@ -94,7 +95,7 @@ db.prepare(
   new Date().toISOString(),
 );
 db.prepare(
-  "INSERT INTO statements(video_id,chunk_id,quote,stance,rationale,attribution,status,created_at,original_payload,start_seconds,end_seconds) VALUES(?,?,?,'neutral','Synthetic test fixture','channel','unreviewed',?,?,12,17)",
+  "INSERT INTO statements(video_id,chunk_id,quote,stance,rationale,attribution,status,created_at,original_payload,start_seconds,end_seconds,analysis_version,transcript_hash) VALUES(?,?,?,'neutral','Synthetic test fixture','channel','unreviewed',?,?,12,17,?,?)",
 ).run(
   expertFixture,
   expertChunk.id,
@@ -113,6 +114,8 @@ db.prepare(
     speaker: null,
     hypothetical: false,
   }),
+  EXTRACTION_VERSION,
+  expertHash,
 );
 const expertStatement = Number(
   (
@@ -144,7 +147,7 @@ db.prepare(
 ).run(
   perspectiveFixture,
   perspectiveHash,
-  "expert-1",
+  EXTRACTION_VERSION,
   new Date().toISOString(),
 );
 const env = {
@@ -253,6 +256,7 @@ try {
     page.getByRole("heading", { name: "SCS Trade — dated insights" }),
   ).toBeVisible();
   await page.getByRole("button", { name: "Videos", exact: true }).click();
+  await expect(page.getByText("1 accepted statements · 0 quarantined claims", { exact: true })).toBeVisible();
   await page.getByText("Read cited summary", { exact: true }).click();
   await expect(
     page.getByText(
@@ -300,6 +304,7 @@ try {
   await expect(
     page.getByRole("heading", { name: "Retrieved passages" }),
   ).toBeVisible();
+  await expect(page.getByText(/discovered videos.*indexed.*missing transcripts/)).toBeVisible();
   await expect(
     page
       .locator(".evidence-result")
@@ -695,6 +700,9 @@ try {
     "Browser checks passed: confirmed-channel workflow (mock discovery), coverage, automatic insight fixtures, statement review, scoped raw RAG, exact transcript evidence, expert mobile layout, watchlist defaults, persisted comparison, chat guard, evidence preview, connection recovery, transcript preview/filter, batch progress, review next/keyboard, source editing, exports and mobile layout.",
   );
 } finally {
+  for (const context of browser?.contexts() || [])
+    for (const page of context.pages())
+      await page.unrouteAll({ behavior: "wait" });
   await browser?.close();
   for (const child of [web, worker]) {
     child.kill("SIGTERM");

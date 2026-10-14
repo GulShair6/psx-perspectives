@@ -69,6 +69,12 @@ const raw = (c: import("../lib/expert").Chunk, quote = c.text) => ({
   speaker: null,
   hypothetical: false,
 });
+const selected = (c: import("../lib/expert").Chunk, quote = c.text) => {
+  const segments = db.prepare("SELECT s.* FROM caption_segments s JOIN chunk_segments cs ON cs.segment_id=s.id WHERE cs.chunk_id=? ORDER BY s.ordinal").all(c.id) as {id:number;text:string}[];
+  const matching = segments.find((s) => s.text === quote);
+  return { ...raw(c, quote), start_segment_id: matching?.id ?? (quote === c.text ? segments[0].id : -1), end_segment_id: matching?.id ?? (quote === c.text ? segments.at(-1)!.id : -1) };
+};
+const selectedSummary = (c: import("../lib/expert").Chunk, text: string, quote = c.text) => ({ ...selected(c, quote), text });
 const response = (value: unknown) =>
   Response.json({
     id: "fixture",
@@ -466,18 +472,11 @@ test("automatic analysis quarantines invalid claims individually and caches comp
   globalThis.fetch = async () => {
     calls++;
     return response({
-      summaries: [
-        ...Array.from({ length: 11 }, () => ({
-          chunk_id: c.id,
-          quote: "FFC outlook is improving.",
-          text: "FFC has a positive outlook.",
-        })),
-        { broken: true },
-      ],
+      summaries: [selectedSummary(c, "FFC has a positive outlook.", "FFC outlook is improving."), { broken: true }],
       statements: [
-        raw(c, "FFC outlook is improving."),
-        { ...raw(c), quote: "An invented source quote" },
-        { ...raw(c), action: "buy", quote: "But do not buy FFC now." },
+        selected(c, "FFC outlook is improving."),
+        selected(c, "An invented source quote"),
+        { ...selected(c, "But do not buy FFC now."), action: "buy" },
       ],
     });
   };
@@ -546,11 +545,7 @@ test("quota pauses automatic analysis while raw transcript indexing continues, t
     return calls === 1
       ? response({
           summaries: [
-            {
-              chunk_id: chunk("expertt0006").id,
-              quote: chunk("expertt0006").text,
-              text: "First saved summary",
-            },
+            selectedSummary(chunk("expertt0006"), "First saved summary"),
           ],
           statements: [],
         })
@@ -784,7 +779,7 @@ test("channel pause stops before another cloud call and resumes without losing c
     return response({
       summaries:
         calls === 1
-          ? [{ chunk_id: c.id, quote: c.text, text: "Saved before pause" }]
+          ? [selectedSummary(c, "Saved before pause")]
           : [],
       statements: [],
     });
@@ -880,6 +875,40 @@ test("successful provider responses containing credentials are discarded before 
     delete process.env.OLLAMA_API_KEY;
   }
 });
+test("extraction rejects over-limit arrays without checkpointing or losing source evidence", async () => {
+  fixture("expertlimit", "FFC source evidence for bounded output.");
+  const original = globalThis.fetch;
+  process.env.OLLAMA_API_KEY = "fixture-array-limit";
+  scheduleInsights();
+  const c = chunk("expertlimit");
+  try {
+    for (const output of [
+      { summaries: Array.from({ length: 11 }, () => selectedSummary(c, "Source discussion")), statements: [] },
+      { summaries: [], statements: Array.from({ length: 41 }, () => selected(c)) },
+    ]) {
+      globalThis.fetch = async () => response(output);
+      await assert.rejects(() => analyzeInsights("expertlimit", () => {}), /Too big/);
+      assert.equal((db.prepare("SELECT COUNT(*) n FROM analysis_checkpoints WHERE video_id='expertlimit'").get() as {n:number}).n, 0);
+      assert.ok(chunk("expertlimit"));
+    }
+  } finally { globalThis.fetch = original; delete process.env.OLLAMA_API_KEY; }
+});
+
+test("synthesis failure returns scoped saved evidence and coverage without a generated conclusion", async () => {
+  const original = globalThis.fetch;
+  process.env.OLLAMA_API_KEY = "fixture-synthesis-failure";
+  globalThis.fetch = async () => Response.json({error:{message:"provider unavailable"}}, {status:503});
+  try {
+    const result = await expertResearch(expertChatSchema.parse({question:"FFC outlook",channelIds:[2],symbols:["FFC"],since:"2026-10-01",until:"2026-10-13"}));
+    assert.ok(result.evidence.length);
+    assert.ok(result.evidence.every(e=>e.channel === "SCS Trade"));
+    assert.equal(result.whatWasSaid.length,0);
+    assert.ok(result.coverage.indexed);
+    assert.match(result.interpretation,/synthesis failed/);
+    assert.match(result.retrieval.fallbackReason||"",/saved evidence/);
+  } finally { globalThis.fetch = original; delete process.env.OLLAMA_API_KEY; }
+});
+
 test.after(() => {
   db.close();
   rmSync(temp, { recursive: true, force: true });

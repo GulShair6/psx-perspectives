@@ -153,3 +153,60 @@ export async function refreshCatalog() {
   }).immediate();
   return `${count} official PSX symbols saved`;
 }
+
+export function aliasMatches(text: string, alias: string) {
+  const a = normalize(alias),
+    t = normalize(text);
+  if (!a) return false;
+  if (/^[a-z0-9-]+$/.test(a))
+    return new RegExp(
+      `(?<![a-z0-9])${a.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?![a-z0-9])`,
+      "u",
+    ).test(t);
+  return t.includes(a);
+}
+export function literalTerms(question: string, symbols: string[] = []) {
+  const terms = [...question.matchAll(/[\p{L}\p{N}][\p{L}\p{N}.-]{1,50}/gu)]
+    .map((m) => normalize(m[0]))
+    .filter(
+      (t) =>
+        ![
+          "what",
+          "said",
+          "about",
+          "their",
+          "does",
+          "have",
+          "with",
+          "which",
+          "that",
+          "this",
+          "were",
+          "been",
+          "they",
+          "when",
+          "stock",
+          "stocks",
+          "the",
+          "and",
+          "for",
+          "کیا",
+          "کے",
+          "کی",
+          "کا",
+          "ہے",
+          "نے",
+          "میں",
+          "اور",
+        ].includes(t),
+    );
+  for (const s of catalog())
+    if (
+      symbols.includes(s.symbol) ||
+      [s.symbol, s.name, ...JSON.parse(s.aliases)].some((a) =>
+        aliasMatches(question, a),
+      )
+    )
+      terms.push(s.symbol, s.name, ...JSON.parse(s.aliases));
+  return [...new Set(terms.map(normalize))].slice(0, 40);
+}

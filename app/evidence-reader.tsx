@@ -90,6 +90,20 @@ export default function EvidenceReader({
       >
         Open original source ↗
       </a>
+      {!!evidence.statements?.length && (
+        <section className="neighbor-context">
+          <h3>Saved perspectives</h3>
+          {evidence.statements.map((s, i) => (
+            <div key={i}>
+              <small>{s.review === "reviewed" ? "Human-reviewed" : "AI-generated, not human-reviewed"}{s.symbols.length ? ` · ${s.symbols.join(", ")}` : ""} · {s.stance}{s.explicitAction ? ` · Explicit action: ${s.explicitAction}` : ""}</small>
+              <p dir="auto">{s.rationale}</p>
+              {s.hypothetical && <p>Hypothetical or educational example.</p>}
+              {s.historicalTarget && <p>Historical stated target: {s.historicalTarget}</p>}
+              {s.explicitHorizon && <p>Explicit horizon: {s.explicitHorizon}</p>}
+            </div>
+          ))}
+        </section>
+      )}
       {evidence.video_id && (
         <section className="neighbor-context">
           <h3>Original transcript context</h3>

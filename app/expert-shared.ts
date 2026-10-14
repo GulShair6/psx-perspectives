@@ -59,6 +59,8 @@ export type Video = {
   summary_evidence: string;
   analysis_error: string | null;
   error: string | null;
+  accepted_count?: number;
+  quarantined_count?: number;
 };
 export type Claim = { text: string; evidenceIds: string[] };
 export type Answer = {
@@ -69,6 +71,8 @@ export type Answer = {
   gaps: string[];
   evidence: ExpertEvidence[];
   cutoff: string | null;
+  coverage?: { discovered: number; indexed: number; missing: number; complete: boolean; cutoff: string | null };
+  retrieval?: { method: string; candidateCount: number; selectedCount: number; fallbackReason: string | null };
 };
 export type Data = {
   channels: Channel[];
