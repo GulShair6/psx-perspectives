@@ -212,7 +212,7 @@ export async function GET(
                   .join(","),
               ),
             ].join("\n")
-          : `# PSX research scorecard\n\n${rows.map((c) => `## ${c.symbol} — ${c.name}\n\n${c.snapshot ? `Price: PKR ${c.snapshot.price}; P/E: ${c.snapshot.pe ?? "unavailable"}; price return excluding payouts: ${c.snapshot.priceReturn ?? "unavailable"}%.\n\nRetrieved: ${c.retrieved_at}. Source: ${c.source_url}\n\n${c.snapshot.notes.join("\n")}` : "No saved observations."}`).join("\n\n")}\n\n# Approved commentary\n\n${opinions()
+          : `# PSX Perspectives scorecard\n\n${rows.map((c) => `## ${c.symbol} — ${c.name}\n\n${c.snapshot ? `Price: PKR ${c.snapshot.price}; P/E: ${c.snapshot.pe ?? "unavailable"}; price return excluding payouts: ${c.snapshot.priceReturn ?? "unavailable"}%.\n\nRetrieved: ${c.retrieved_at}. Source: ${c.source_url}\n\n${c.snapshot.notes.join("\n")}` : "No saved observations."}`).join("\n\n")}\n\n# Approved commentary\n\n${opinions()
               .filter((o) => o.status === "approved")
               .map(
                 (o) =>
@@ -225,7 +225,7 @@ export async function GET(
             format === "csv"
               ? "text/csv; charset=utf-8"
               : "text/markdown; charset=utf-8",
-          "Content-Disposition": `attachment; filename="psx-research.${format === "csv" ? "csv" : "md"}"`,
+          "Content-Disposition": `attachment; filename="psx-perspectives.${format === "csv" ? "csv" : "md"}"`,
           "Cache-Control": "no-store",
         },
       });

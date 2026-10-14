@@ -1,5 +1,5 @@
 {
-  "name": "psx-research-desk",
+  "name": "psx-perspectives",
   "version": "0.1.0",
   "private": true,
   "scripts": {
@@ -36,5 +36,10 @@
     "tsx": "^4.20.0",
     "typescript": "^5.9.0"
   },
-  "type": "module"
+  "type": "module",
+  "description": "A local, source-grounded research workspace for Pakistan Stock Exchange commentary.",
+  "license": "MIT",
+  "engines": {
+    "node": ">=22.13.0"
+  }
 }

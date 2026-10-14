@@ -1,7 +1,6 @@
 import AxeBuilder from "@axe-core/playwright";
 import { chromium, expect } from "@playwright/test";
-import Database from "better-sqlite3";
-import { mkdtempSync, rmSync, existsSync, mkdirSync } from "node:fs";
+import { mkdtempSync, rmSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawn } from "node:child_process";
@@ -21,17 +20,15 @@ db.prepare("UPDATE pipeline_state SET catalog_checked_at=? WHERE id=1").run(
   new Date().toISOString(),
 );
 db.prepare("INSERT INTO watchlist VALUES('MCB')").run();
-const existing = join(process.cwd(), "data", "research.sqlite");
-if (existsSync(existing)) {
-  const source = new Database(existing, { readonly: true });
-  for (const row of source
-    .prepare(
-      "SELECT symbol,payload FROM observations WHERE id IN (SELECT MAX(id) FROM observations GROUP BY symbol)",
-    )
-    .all() as { symbol: string; payload: string }[])
-    saveSnapshot(row.symbol, JSON.parse(row.payload));
-  source.close();
-}
+// Synthetic company data lives only in this disposable browser-test database.
+const { parsePsx } = await import("../lib/sources");
+saveSnapshot(
+  "OGDC",
+  parsePsx(
+    '<title>OGDC - Quote</title><div class="quote__name">Oil &amp; Gas Development Company Limited — synthetic browser fixture, not market data</div><div class="quote__close">Rs.100</div><div id="financials"><div class="tabs__panel" data-name="Annual"><table><thead><tr><th></th><th>2025</th></tr></thead><tbody><tr><td>EPS</td><td>1</td></tr></tbody></table></div></div>',
+    "OGDC",
+  ),
+);
 const fixture = "zztest00001";
 importTranscript({
   url: `https://www.youtube.com/watch?v=${fixture}`,
@@ -579,7 +576,7 @@ try {
   await page.getByLabel("Filter companies").selectOption("all");
   const download = page.waitForEvent("download");
   await page.getByRole("link", { name: "Export CSV" }).click();
-  await expect((await download).suggestedFilename()).toBe("psx-research.csv");
+  await expect((await download).suggestedFilename()).toBe("psx-perspectives.csv");
   const rejected = await page.request.post(`${origin}/api/watchlist`, {
     headers: { origin: "https://evil.example" },
     data: { symbol: "OGDC", watched: true },
