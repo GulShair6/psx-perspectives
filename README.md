@@ -98,6 +98,12 @@ Browser checks require a completed build. Screenshots are saved under ignored `d
 
 `npm run proof` is an optional live PSX/feed/caption smoke check. `npm run refresh` retrieves official observations and updates your database. Both depend on external services and are separate from deterministic tests.
 
+Before live release sign-off:
+
+1. Configure the YouTube key locally and restart. Confirm a searched channel, synchronize its history, and inspect coverage, saved transcripts, and pause/resume behavior. Record missing captions and discovery errors.
+2. Use [the 20-question checklist](tests/expert-research-questions.json). Fix the channel/date filters for each question, independently identify the required source passages before asking, and check the top-ten retrieved evidence, answer citations, dates, and timestamps. Record each result; at least 18 of 20 must meet the evidence requirement or correctly report its absence.
+3. Open a channel's timeline and choose **Review / correct statement**. Check the original passage, correct the stock and stance, then select **Use corrected stock and stance as my independent accuracy reference** before saving. Evaluate at least 30 distinct real source passages/chunks; stock/stance accuracy must reach 90%. Keep these private review records outside the public repository.
+
 ## Backup and restore
 
 ```sh
