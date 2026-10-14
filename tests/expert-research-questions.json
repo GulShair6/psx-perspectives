@@ -1,0 +1,124 @@
+[
+  {
+    "language": "en",
+    "symbols": ["PSO"],
+    "question": "What forecast EPS has SCS Trade discussed for PSO in the selected period? Separate forecasts from confirmed results.",
+    "check": "Identify dated forecast quotes; do not convert them into official company results."
+  },
+  {
+    "language": "ur",
+    "symbols": ["PSO"],
+    "question": "پی ایس او کے بارے میں منتخب چینلز نے کیا کہا؟ تاریخ اور اصل اقتباس دکھائیں۔",
+    "check": "Retrieve PSO aliases; cite original passages without inventing numbers."
+  },
+  {
+    "language": "mixed",
+    "symbols": ["MEBL"],
+    "question": "Meezan Bank ke dividend ke bare mein recent videos mein kya kaha gaya?",
+    "check": "Distinguish historical dividend commentary from current official payouts."
+  },
+  {
+    "language": "en",
+    "symbols": ["MEBL"],
+    "question": "Did any selected channel explicitly recommend buying Meezan Bank, or merely express a positive outlook?",
+    "check": "A bullish view must not become an explicit buy action."
+  },
+  {
+    "language": "en",
+    "symbols": ["GL"],
+    "question": "What reasons and risks did the channels give when discussing Ghandhara Automobiles?",
+    "check": "Match canonical aliases and quote both rationale and risks when available."
+  },
+  {
+    "language": "ur",
+    "symbols": ["FFC"],
+    "question": "فوجی فرٹیلائزر کے بارے میں مختلف چینلز کی رائے کہاں مختلف ہے؟",
+    "check": "Disagreements need evidence from different selected channels."
+  },
+  {
+    "language": "en",
+    "symbols": ["OGDC"],
+    "question": "How has each channel's OGDC perspective changed between earlier and later videos in this window?",
+    "check": "Require earlier and later evidence from the same channel; do not invent the reason for a change."
+  },
+  {
+    "language": "mixed",
+    "symbols": ["PPL"],
+    "question": "PPL ke bare mein pehle aur ab ke views compare karein. Sirf saved evidence use karein.",
+    "check": "Report chronology or explicitly state that the saved history is insufficient."
+  },
+  {
+    "language": "en",
+    "symbols": ["LUCK"],
+    "question": "Which explicit targets and investment horizons were stated for Lucky Cement?",
+    "check": "Targets and horizons must be exact supported historical statements; missing fields stay missing."
+  },
+  {
+    "language": "ur",
+    "symbols": ["EFERT"],
+    "question": "کیا اینگرو فرٹیلائزر کو خریدنے، رکھنے یا صرف دیکھنے کا مشورہ دیا گیا تھا؟",
+    "check": "Distinguish buy, hold and watch from general discussion."
+  },
+  {
+    "language": "en",
+    "symbols": ["FFC"],
+    "question": "Did a speaker say not to buy FFC? Preserve the negation and its context.",
+    "check": "Never turn a negated buy statement into a buy recommendation."
+  },
+  {
+    "language": "mixed",
+    "symbols": ["HUBC"],
+    "question": "HUBCO par bullish sentiment aur explicit buy advice mein kya farq tha in these videos?",
+    "check": "Use aliases and separate stance from action."
+  },
+  {
+    "language": "en",
+    "symbols": ["MCB"],
+    "question": "Was the MCB statement made by an identified guest, the host, or an unidentified speaker on the channel?",
+    "check": "Do not attribute guest statements to the channel owner; disclose uncertain identity."
+  },
+  {
+    "language": "ur",
+    "symbols": ["SYS"],
+    "question": "سسٹمز لمیٹڈ کی گفتگو میں کون سی بات تعلیمی یا فرضی مثال تھی؟",
+    "check": "Hypothetical examples must not become supported recommendations."
+  },
+  {
+    "language": "en",
+    "symbols": [],
+    "question": "What is the latest indexed market outlook from the selected channels, and what is the evidence cutoff?",
+    "check": "Current means indexed commentary within the selected window, not live market facts."
+  },
+  {
+    "language": "mixed",
+    "symbols": [],
+    "topics": ["dividend"],
+    "question": "Dividend topic par channels ke views compare karein, with dated evidence.",
+    "check": "Apply channel, topic and date scope before ranking; distinguish missing evidence from agreement."
+  },
+  {
+    "language": "en",
+    "symbols": ["PSO"],
+    "question": "What did only the single selected channel say about PSO during a narrow chosen date range?",
+    "check": "No evidence from excluded channels or outside the selected dates may appear."
+  },
+  {
+    "language": "ur",
+    "symbols": ["OGDC"],
+    "question": "اگر منتخب مدت میں او جی ڈی سی کے کیپشن موجود نہیں، تو ہمیں کیا معلوم نہیں ہو سکتا؟",
+    "check": "Missing captions and incomplete discovery must remain explicit evidence gaps."
+  },
+  {
+    "language": "en",
+    "symbols": ["MEBL"],
+    "mode": "combined",
+    "question": "Compare Meezan commentary with the saved official company observations, showing each source date separately.",
+    "check": "Include company data only in combined mode; distinguish source price date from retrieval date and commentary."
+  },
+  {
+    "language": "mixed",
+    "symbols": ["FFC"],
+    "question": "FFC par kaun se views human-reviewed hain aur kaun se AI-generated? Is verified consensus available?",
+    "check": "Identify review status and keep verified consensus locked until the independent accuracy gate passes."
+  }
+]

@@ -1,0 +1,27 @@
+ALTER TABLE sources ADD COLUMN handle TEXT;
+ALTER TABLE sources ADD COLUMN thumbnail TEXT;
+ALTER TABLE sources ADD COLUMN uploads_playlist TEXT;
+CREATE TABLE channel_checkpoints(source_id INTEGER PRIMARY KEY REFERENCES sources(id), since TEXT NOT NULL, until TEXT NOT NULL, page_token TEXT, discovery_complete INTEGER NOT NULL DEFAULT 0, paused INTEGER NOT NULL DEFAULT 0, updated_at TEXT NOT NULL);
+CREATE TABLE caption_segments(id INTEGER PRIMARY KEY, video_id TEXT NOT NULL REFERENCES videos(id), ordinal INTEGER NOT NULL, text TEXT NOT NULL, start_seconds REAL, end_seconds REAL, language TEXT NOT NULL, provenance TEXT NOT NULL, retrieved_at TEXT NOT NULL, UNIQUE(video_id,ordinal));
+CREATE TABLE chunks(id INTEGER PRIMARY KEY, video_id TEXT NOT NULL REFERENCES videos(id), ordinal INTEGER NOT NULL, text TEXT NOT NULL, searchable TEXT NOT NULL, start_seconds REAL, end_seconds REAL, UNIQUE(video_id,ordinal));
+CREATE TABLE chunk_segments(chunk_id INTEGER REFERENCES chunks(id), segment_id INTEGER REFERENCES caption_segments(id), PRIMARY KEY(chunk_id,segment_id));
+CREATE VIRTUAL TABLE chunk_search USING fts5(searchable,content='chunks',content_rowid='id',tokenize='unicode61');
+CREATE TRIGGER chunk_insert AFTER INSERT ON chunks BEGIN INSERT INTO chunk_search(rowid,searchable) VALUES(new.id,new.searchable); END;
+CREATE TABLE stock_catalog(symbol TEXT PRIMARY KEY,name TEXT NOT NULL,aliases TEXT NOT NULL DEFAULT '[]',source_url TEXT NOT NULL,verified_at TEXT);
+INSERT INTO stock_catalog SELECT symbol,name,aliases,'https://dps.psx.com.pk/screener',validated_at FROM companies;
+CREATE TABLE analysis_runs(video_id TEXT REFERENCES videos(id),transcript_hash TEXT NOT NULL,version TEXT NOT NULL,status TEXT NOT NULL DEFAULT 'pending',summary TEXT,summary_evidence TEXT NOT NULL DEFAULT '[]',error TEXT,updated_at TEXT NOT NULL,PRIMARY KEY(video_id,transcript_hash,version));
+CREATE TABLE statements(id INTEGER PRIMARY KEY,video_id TEXT NOT NULL REFERENCES videos(id),chunk_id INTEGER REFERENCES chunks(id),quote TEXT NOT NULL,stance TEXT NOT NULL,action TEXT,rationale TEXT NOT NULL,target TEXT,horizon TEXT,attribution TEXT NOT NULL,speaker TEXT,status TEXT NOT NULL,validation_error TEXT,created_at TEXT NOT NULL);
+CREATE TABLE statement_stocks(statement_id INTEGER REFERENCES statements(id),symbol TEXT REFERENCES stock_catalog(symbol),PRIMARY KEY(statement_id,symbol));
+CREATE TABLE statement_topics(statement_id INTEGER REFERENCES statements(id),topic TEXT NOT NULL,PRIMARY KEY(statement_id,topic));
+CREATE TABLE query_expansions(query TEXT PRIMARY KEY,terms TEXT NOT NULL,created_at TEXT NOT NULL);
+CREATE TABLE pipeline_state(id INTEGER PRIMARY KEY CHECK(id=1),analysis_paused TEXT,catalog_checked_at TEXT);
+INSERT INTO pipeline_state(id) VALUES(1);
+CREATE INDEX videos_channel_date ON videos(source_id,published_at);
+CREATE INDEX chunks_video ON chunks(video_id);
+CREATE INDEX statements_video ON statements(video_id,status);
+
+CREATE TABLE analysis_checkpoints(video_id TEXT REFERENCES videos(id),transcript_hash TEXT,version TEXT,chunk_id INTEGER REFERENCES chunks(id),PRIMARY KEY(video_id,transcript_hash,version,chunk_id));
+ALTER TABLE statements ADD COLUMN original_payload TEXT;
+ALTER TABLE statements ADD COLUMN start_seconds REAL;
+ALTER TABLE statements ADD COLUMN end_seconds REAL;
+CREATE TABLE statement_evaluations(statement_id INTEGER PRIMARY KEY REFERENCES statements(id),correct INTEGER NOT NULL,evaluated_at TEXT NOT NULL);

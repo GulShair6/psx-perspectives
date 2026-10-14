@@ -32,7 +32,7 @@ export const seeds = [
   ["EFERT", "Engro Fertilizers", ["اینگرو فرٹیلائزر"]],
   ["LUCK", "Lucky Cement", ["لکی سیمنٹ"]],
   ["HUBC", "Hub Power Company", ["Hubco", "حبکو"]],
-  ["MEBL", "Meezan Bank", ["میزان بینک"]],
+  ["MEBL", "Meezan Bank", ["Meezan", "میزان", "میزان بینک"]],
   ["MCB", "MCB Bank", ["Muslim Commercial Bank"]],
   ["SYS", "Systems Limited", ["سسٹمز لمیٹڈ"]],
 ] as const;
@@ -41,6 +41,9 @@ db.transaction(() => {
     db.prepare(
       "INSERT OR IGNORE INTO companies(symbol,name,aliases) VALUES(?,?,?)",
     ).run(symbol, name, JSON.stringify(aliases));
+  db.exec(
+    "INSERT OR IGNORE INTO stock_catalog(symbol,name,aliases,source_url,verified_at) SELECT symbol,name,aliases,'https://dps.psx.com.pk/screener',validated_at FROM companies",
+  );
   if (
     !(db.prepare("SELECT COUNT(*) n FROM sources").get() as { n: number }).n
   ) {
@@ -107,7 +110,7 @@ export function opinions(): Opinion[] {
 export function gate() {
   const r = db
     .prepare(
-      "SELECT COUNT(*) reviewed,COALESCE(SUM(correct),0) correct FROM (SELECT o.passage_id,MIN(e.correct) correct FROM evaluations e JOIN opinions o ON o.id=e.opinion_id GROUP BY o.passage_id)",
+      "SELECT COUNT(*) reviewed,COALESCE(SUM(correct),0) correct FROM (SELECT o.passage_id,MIN(e.correct) correct FROM evaluations e JOIN opinions o ON o.id=e.opinion_id GROUP BY o.passage_id UNION ALL SELECT 'statement:'||st.chunk_id,MIN(e.correct) correct FROM statement_evaluations e JOIN statements st ON st.id=e.statement_id GROUP BY st.chunk_id)",
     )
     .get() as { reviewed: number; correct: number };
   return {

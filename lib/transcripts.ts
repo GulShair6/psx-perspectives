@@ -1,7 +1,12 @@
 import { createHash } from "node:crypto";
 import { db, now } from "./db";
+import { indexVideo } from "./knowledge";
 import { videoId, importSchema } from "./validation";
-export type Passage = { text: string; start_seconds: number | null };
+export type Passage = {
+  text: string;
+  start_seconds: number | null;
+  end_seconds?: number | null;
+};
 export function parseTranscript(text: string): Passage[] {
   const lines = text
     .replace(/^\uFEFF/, "")
@@ -10,6 +15,7 @@ export function parseTranscript(text: string): Passage[] {
   const output: Passage[] = [];
   const timed = /\s*-->/.test(text);
   let timestamp: number | null = null;
+  let endTimestamp: number | null = null;
   let block: string[] = [];
   const flush = () => {
     const joined = block
@@ -21,6 +27,7 @@ export function parseTranscript(text: string): Passage[] {
         output.push({
           text: joined.slice(i, i + 1800),
           start_seconds: timestamp,
+          ...(endTimestamp === null ? {} : { end_seconds: endTimestamp }),
         });
     }
     block = [];
@@ -33,14 +40,27 @@ export function parseTranscript(text: string): Passage[] {
       if (Number(match[2]) > 59 || Number(match[3]) > 59)
         throw new Error("Invalid caption timestamp");
       flush();
+      const ending = line
+        .split("-->")[1]
+        ?.match(/(?:(\d{1,2}):)?(\d{2}):(\d{2})(?:[.,](\d{3}))?/);
+      if (!ending || Number(ending[2]) > 59 || Number(ending[3]) > 59)
+        throw new Error("Invalid caption end timestamp");
+      endTimestamp =
+        Number(ending[1] || 0) * 3600 +
+        Number(ending[2]) * 60 +
+        Number(ending[3]) +
+        Number(ending[4] || 0) / 1000;
       timestamp =
         Number(match[1] || 0) * 3600 +
         Number(match[2]) * 60 +
         Number(match[3]) +
         Number(match[4] || 0) / 1000;
+      if (endTimestamp < timestamp)
+        throw new Error("Caption end precedes start");
     } else if (!line.trim()) {
       flush();
       timestamp = null;
+      endTimestamp = null;
     } else if (
       (!timed || !/^\d+$/.test(line.trim())) &&
       !/^(WEBVTT|NOTE|Kind:|Language:)/.test(line.trim())
@@ -60,8 +80,17 @@ export function importTranscript(input: unknown) {
   return db
     .transaction(() => {
       const existing = db
-        .prepare("SELECT content_hash FROM videos WHERE id=?")
-        .get(id) as { content_hash: string | null } | undefined;
+        .prepare(
+          "SELECT content_hash,source_id,title,published_at FROM videos WHERE id=?",
+        )
+        .get(id) as
+        | {
+            content_hash: string | null;
+            source_id: number | null;
+            title: string;
+            published_at: string;
+          }
+        | undefined;
       if (existing?.content_hash) {
         if (existing.content_hash !== hash)
           throw new Error(
@@ -75,7 +104,7 @@ export function importTranscript(input: unknown) {
       )
         throw new Error("Unknown source");
       db.prepare(
-        `INSERT INTO videos(id,source_id,title,speaker,published_at,url,language,status,content_hash) VALUES(?,?,?,?,?,?,?,'imported',?) ON CONFLICT(id) DO UPDATE SET source_id=excluded.source_id,title=excluded.title,speaker=excluded.speaker,published_at=excluded.published_at,url=excluded.url,language=excluded.language,status='imported',error=NULL,content_hash=excluded.content_hash`,
+        `INSERT INTO videos(id,source_id,title,speaker,published_at,url,language,status,content_hash) VALUES(?,?,?,?,?,?,?,'imported',?) ON CONFLICT(id) DO UPDATE SET source_id=COALESCE(videos.source_id,excluded.source_id),title=CASE WHEN videos.source_id IS NOT NULL THEN videos.title ELSE excluded.title END,speaker=excluded.speaker,published_at=CASE WHEN videos.source_id IS NOT NULL THEN videos.published_at ELSE excluded.published_at END,url=excluded.url,language=excluded.language,status='imported',error=NULL,content_hash=excluded.content_hash`,
       ).run(
         id,
         data.source_id,
@@ -90,6 +119,7 @@ export function importTranscript(input: unknown) {
         db.prepare(
           "INSERT INTO passages(video_id,start_seconds,text) VALUES(?,?,?)",
         ).run(id, p.start_seconds, p.text);
+      indexVideo(id, passages, data.language, "User-supplied transcript");
       return { id, duplicate: false };
     })
     .immediate();

@@ -4,7 +4,6 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { spawn } from "node:child_process";
 const temp = mkdtempSync(join(tmpdir(), "psx-test-"));
 process.env.PSX_DB_PATH = join(temp, "test.sqlite");
 const { db, companies, saveSnapshot, gate, consensus, now } =
@@ -14,7 +13,6 @@ const { numeric, parsePsx, parsePayouts, parseFeed } =
 const { videoId, officialUrl } = await import("../lib/validation");
 const { parseTranscript, importTranscript, recordReview } =
   await import("../lib/transcripts");
-const { reserve, settle, budget, month } = await import("../lib/budget");
 const {
   matchesCompany,
   validateExtraction,
@@ -117,8 +115,8 @@ test("SRT, VTT and plain imports keep supplied timestamps only", () => {
       "1\n00:00:02,800 --> 00:00:04,000\nOGDC is undervalued.\n\n2\n00:01:00,000 --> 00:01:04,000\nI would not buy PPL.",
     ),
     [
-      { text: "OGDC is undervalued.", start_seconds: 2.8 },
-      { text: "I would not buy PPL.", start_seconds: 60 },
+      { text: "OGDC is undervalued.", start_seconds: 2.8, end_seconds: 4 },
+      { text: "I would not buy PPL.", start_seconds: 60, end_seconds: 64 },
     ],
   );
   assert.equal(
@@ -361,34 +359,6 @@ test("job claim is atomic and only queued jobs are returned", () => {
   assert.ok(claimJob());
   assert.equal(claimJob(), undefined);
 });
-test("budget uses Pakistan month boundaries and settles one reservation once", () => {
-  assert.equal(month(new Date("2026-09-30T20:00:00Z")), "2026-10");
-  const id = reserve("test", 10000);
-  settle(id, 1000, 1000);
-  assert.equal(budget().used, 0.002);
-  assert.throws(() => settle(id, 1000, 1000));
-  assert.throws(() => reserve("invalid", -1));
-});
-test("concurrent processes cannot reserve beyond the monthly $10 cap", async () => {
-  db.prepare("DELETE FROM usage").run();
-  const script = join(process.cwd(), "tests/reserve-child.ts");
-  const results = await Promise.all(
-    Array.from(
-      { length: 8 },
-      () =>
-        new Promise<number>((resolve, reject) => {
-          const p = spawn(process.execPath, ["--import", "tsx", script], {
-            env: process.env,
-            stdio: "ignore",
-          });
-          p.on("error", reject);
-          p.on("exit", (c) => resolve(c ?? 1));
-        }),
-    ),
-  );
-  assert.equal(results.filter((c) => c === 0).length, 5);
-  assert.equal(budget().remaining, 0);
-});
 test("empty evidence answers disclose gaps without charging AI", async () => {
   const answer = await research(
     "Nonexistent company question",
@@ -570,11 +540,15 @@ test("blocked captions stop the batch and unavailable videos get a daily cooldow
   }
 });
 
-test("Ollama Cloud uses the server key, validates JSON and accounts for credit usage", async () => {
+test("Ollama Cloud validates evidence without an application cap or usage metadata requirement", async () => {
   const originalFetch = globalThis.fetch;
   const originalKey = process.env.OLLAMA_API_KEY;
   process.env.OLLAMA_API_KEY = "test-server-secret";
   db.prepare("DELETE FROM usage").run();
+  db.prepare(
+    "INSERT INTO usage(month,purpose,reserved_micro,created_at) VALUES(?,?,?,?)",
+  ).run("2026-10", "Historical cap fixture", 100_000_000, now());
+  let usage = true;
   let raw = '{"ok":true}';
   let status = 200;
   let finish = "stop";
@@ -594,7 +568,9 @@ test("Ollama Cloud uses the server key, validates JSON and accounts for credit u
       status === 200
         ? {
             choices: [{ message: { content: raw }, finish_reason: finish }],
-            usage: { prompt_tokens: 1000, completion_tokens: 100 },
+            ...(usage
+              ? { usage: { prompt_tokens: 1000, completion_tokens: 100 } }
+              : {}),
           }
         : { error: { message: "quota exhausted" } },
       { status },
@@ -619,7 +595,12 @@ test("Ollama Cloud uses the server key, validates JSON and accounts for credit u
   try {
     assert.equal(aiSettings().provider, "Ollama Cloud");
     assert.deepEqual(await call(), { ok: true });
-    assert.equal(budget().used, 0.00018);
+    usage = false;
+    assert.deepEqual(await call(), { ok: true });
+    assert.equal(
+      (db.prepare("SELECT COUNT(*) n FROM usage").get() as { n: number }).n,
+      1,
+    );
     raw = '```json\n{"ok":true}\n```';
     assert.deepEqual(await call(), { ok: true });
     raw = "unstructured output";
@@ -630,14 +611,6 @@ test("Ollama Cloud uses the server key, validates JSON and accounts for credit u
     await assert.rejects(call(), /truncated/);
     status = 429;
     await assert.rejects(call(), /quota exhausted/);
-    assert.equal(
-      (
-        db
-          .prepare("SELECT status FROM usage ORDER BY id DESC LIMIT 1")
-          .get() as { status: string }
-      ).status,
-      "released",
-    );
   } finally {
     globalThis.fetch = originalFetch;
     if (originalKey === undefined) delete process.env.OLLAMA_API_KEY;
@@ -750,7 +723,7 @@ test("batch validation failures continue, quota failures stop, and zero opinions
     "Reviewed",
   );
 });
-test("importing a transcript never triggers AI analysis even with a configured key", async () => {
+test("importing a transcript indexes evidence without making an inline AI call", async () => {
   const originalKey = process.env.OLLAMA_API_KEY;
   const originalFetch = globalThis.fetch;
   process.env.OLLAMA_API_KEY = "fixture-key";
@@ -770,7 +743,7 @@ test("importing a transcript never triggers AI analysis even with a configured k
         text: "OGDC fixture evidence.",
       }),
     });
-    assert.match(result, /Ready to analyze/);
+    assert.match(result, /indexed and searchable/);
     assert.equal(
       (
         db
@@ -789,4 +762,19 @@ test("importing a transcript never triggers AI analysis even with a configured k
 test.after(() => {
   db.close();
   rmSync(temp, { recursive: true, force: true });
+});
+
+test("state endpoint excludes application budget and quota fields", async () => {
+  const { NextRequest } = await import("next/server");
+  const { GET } = await import("../app/api/[...path]/route");
+  const response = await GET(
+    new NextRequest("http://127.0.0.1:3000/api/state", {
+      headers: { host: "127.0.0.1:3000" },
+    }),
+    { params: Promise.resolve({ path: ["state"] }) },
+  );
+  assert.equal(response.status, 200);
+  const state = await response.json();
+  assert.equal("budget" in state, false);
+  assert.equal("quota" in state, false);
 });

@@ -2,7 +2,6 @@ import { today } from "@/lib/time";
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { db, companies, opinions, gate, consensus, queue, now } from "@/lib/db";
-import { budget } from "@/lib/budget";
 import { research, aiSettings } from "@/lib/ai";
 import {
   queueDiscovery,
@@ -19,6 +18,23 @@ import {
   videoId,
   officialUrl,
 } from "@/lib/validation";
+import {
+  searchChannels,
+  followChannel,
+  syncChannel,
+  pauseChannel,
+  channelCoverage,
+} from "@/lib/channels";
+import {
+  expertChatSchema,
+  expertResearch,
+  insights,
+  pipeline,
+  resumeInsights,
+  reviewStatement,
+  scopeCoverage,
+} from "@/lib/expert";
+import { catalog } from "@/lib/knowledge";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 function local(request: NextRequest, mutation = false) {
@@ -52,6 +68,53 @@ export async function GET(
   try {
     local(request);
     const path = (await params).path.join("/");
+    if (path === "channels/search")
+      return response({
+        channels: await searchChannels(
+          z.string().parse(request.nextUrl.searchParams.get("q")),
+        ),
+      });
+    if (path === "channels")
+      return response({
+        channels: channelCoverage(),
+        youtubeConfigured: !!process.env.YOUTUBE_DATA_API_KEY,
+        pipeline: pipeline(),
+        catalog: catalog(),
+      });
+    if (path === "channels/evidence") {
+      const p = expertChatSchema.parse({
+        question: "coverage",
+        channelIds: (request.nextUrl.searchParams.get("ids") || "")
+          .split(",")
+          .map(Number),
+        since: request.nextUrl.searchParams.get("since"),
+        until: request.nextUrl.searchParams.get("until"),
+      });
+      return response(scopeCoverage(p));
+    }
+    if (path === "channels/insights") {
+      const id = z.coerce
+        .number()
+        .int()
+        .positive()
+        .parse(request.nextUrl.searchParams.get("id"));
+      const since = z.iso
+        .date()
+        .parse(request.nextUrl.searchParams.get("since"));
+      const until = z.iso
+        .date()
+        .parse(request.nextUrl.searchParams.get("until"));
+      if (since > until) throw new Error("Invalid date range");
+      return response(
+        insights(
+          id,
+          since,
+          until,
+          request.nextUrl.searchParams.get("symbol") || undefined,
+          request.nextUrl.searchParams.get("topic")?.slice(0, 100) || undefined,
+        ),
+      );
+    }
     if (path === "state") {
       const since =
         request.nextUrl.searchParams.get("since") ||
@@ -87,7 +150,6 @@ export async function GET(
           )
           .all(),
         gate: gate(),
-        budget: budget(),
         aiConfigured: aiSettings().configured,
         aiProvider: aiSettings().provider,
         aiModel: aiSettings().model,
@@ -105,6 +167,16 @@ export async function GET(
       if (!video) return response({ error: "Video not found" }, 404);
       return response({
         video,
+        segments: db
+          .prepare(
+            "SELECT * FROM caption_segments WHERE video_id=? ORDER BY ordinal",
+          )
+          .all(id),
+        chunks: db
+          .prepare(
+            "SELECT id,text,start_seconds,end_seconds FROM chunks WHERE video_id=? ORDER BY ordinal",
+          )
+          .all(id),
         passages: db
           .prepare(
             "SELECT id,start_seconds,text FROM passages WHERE video_id=? ORDER BY id",
@@ -174,6 +246,59 @@ export async function POST(
     local(request, true);
     const path = (await params).path.join("/");
     const input = await json(request);
+    if (path === "channels/follow") {
+      const p = z
+        .object({
+          id: z.string().regex(/^UC[\w-]{22}$/),
+          confirmed: z.literal(true),
+        })
+        .strict()
+        .parse(input);
+      return response(await followChannel(p.id), 202);
+    }
+    if (["channels/sync", "channels/pause", "channels/resume"].includes(path)) {
+      const p = z
+        .object({ source_id: z.number().int().positive() })
+        .strict()
+        .parse(input);
+      if (path === "channels/pause") {
+        pauseChannel(p.source_id);
+        return response({ ok: true });
+      }
+      return response(
+        { job: syncChannel(p.source_id, path === "channels/resume") },
+        202,
+      );
+    }
+    if (path === "statements/review") {
+      reviewStatement(input);
+      return response({ ok: true });
+    }
+    if (path === "insights/resume") {
+      z.object({}).strict().parse(input);
+      resumeInsights();
+      return response({ ok: true });
+    }
+    if (path === "catalog/refresh") {
+      z.object({}).strict().parse(input);
+      return response({ job: queue("catalog", {}) }, 202);
+    }
+    if (path === "catalog/aliases") {
+      const p = z
+        .object({
+          symbol: z.string().regex(/^[A-Z0-9-]{1,20}$/),
+          aliases: z.array(z.string().trim().min(1).max(100)).max(30),
+        })
+        .strict()
+        .parse(input);
+      if (
+        !db
+          .prepare("UPDATE stock_catalog SET aliases=? WHERE symbol=?")
+          .run(JSON.stringify([...new Set(p.aliases)]), p.symbol).changes
+      )
+        throw new Error("Unknown stock symbol");
+      return response({ ok: true });
+    }
     if (path === "refresh") {
       const p = z
         .object({ symbols: z.array(symbolSchema).min(1).max(10) })
@@ -225,6 +350,8 @@ export async function POST(
       return response({ ok: true });
     }
     if (path === "chat") {
+      if (input.channelIds)
+        return response(await expertResearch(expertChatSchema.parse(input)));
       const p = chatSchema.parse(input);
       return response(await research(p.question, p.symbols, p.since));
     }
@@ -263,7 +390,27 @@ export async function POST(
         throw new Error(
           "Use an official pilot website or HTTPS YouTube channel page",
         );
+      if (
+        p.channel_id &&
+        db
+          .prepare("SELECT 1 FROM sources WHERE channel_id=? AND id<>?")
+          .get(p.channel_id, p.id || 0)
+      )
+        throw new Error(
+          "That channel is already followed; edit its existing source.",
+        );
       if (p.id) {
+        const existing = db
+          .prepare("SELECT channel_id FROM sources WHERE id=?")
+          .get(p.id) as { channel_id: string | null } | undefined;
+        if (
+          existing?.channel_id &&
+          existing.channel_id !== p.channel_id &&
+          db.prepare("SELECT 1 FROM videos WHERE source_id=?").get(p.id)
+        )
+          throw new Error(
+            "Follow the new channel in Expert research; changing this identity would mix saved histories.",
+          );
         if (
           !db
             .prepare(
@@ -310,24 +457,35 @@ export async function POST(
       return response(
         {
           job:
-            old.type === "discover"
-              ? queueDiscovery(payload.source_id)
-              : old.type === "extract" || old.type === "extract_batch"
-                ? queueExtraction(
-                    (old.type === "extract"
-                      ? [payload.id]
-                      : payload.ids
-                    ).filter(
-                      (id: string) =>
-                        !db
-                          .prepare(
-                            "SELECT 1 FROM videos WHERE id=? AND status='extracted' UNION SELECT 1 FROM opinions WHERE video_id=?",
-                          )
-                          .get(id, id),
-                    ),
-                    old.type === "extract",
-                  )
-                : queue(old.type, payload),
+            old.type === "channel_sync"
+              ? syncChannel(payload.source_id, true)
+              : old.type === "insights"
+                ? (resumeInsights(),
+                  (
+                    db
+                      .prepare(
+                        "SELECT id FROM jobs WHERE type='insights' AND status IN ('queued','running') AND json_extract(payload,'$.id')=?",
+                      )
+                      .get(payload.id) as { id: number } | undefined
+                  )?.id)
+                : old.type === "discover"
+                  ? queueDiscovery(payload.source_id)
+                  : old.type === "extract" || old.type === "extract_batch"
+                    ? queueExtraction(
+                        (old.type === "extract"
+                          ? [payload.id]
+                          : payload.ids
+                        ).filter(
+                          (id: string) =>
+                            !db
+                              .prepare(
+                                "SELECT 1 FROM videos WHERE id=? AND status='extracted' UNION SELECT 1 FROM opinions WHERE video_id=?",
+                              )
+                              .get(id, id),
+                        ),
+                        old.type === "extract",
+                      )
+                    : queue(old.type, payload),
         },
         202,
       );

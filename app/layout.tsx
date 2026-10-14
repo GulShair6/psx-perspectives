@@ -1,9 +1,9 @@
 import type { Metadata } from "next";
 import "./globals.css";
 export const metadata: Metadata = {
-  title: "PSX Research Desk",
+  title: "PSX Perspectives",
   description:
-    "Company evidence and expert commentary for personal PSX research",
+    "Understand YouTube and expert perspectives on Pakistan Stock Exchange stocks, with dated transcript evidence",
 };
 export default function Layout({ children }: { children: React.ReactNode }) {
   return (

@@ -10,6 +10,9 @@ import { symbolSchema, videoId } from "./validation";
 import OpenAI from "openai";
 import { z } from "zod";
 import { createHash } from "node:crypto";
+import { collectChannel, syncChannel } from "./channels";
+import { indexVideo, refreshCatalog } from "./knowledge";
+import { analyzeInsights, scheduleInsights, pipeline } from "./expert";
 export const DISCOVERY_INTERVAL = 6 * 60 * 60 * 1000;
 export const CAPTION_RETRY_INTERVAL = 24 * 60 * 60 * 1000;
 
@@ -60,7 +63,10 @@ export function videos() {
     (SELECT COUNT(*) FROM opinions WHERE video_id=v.id AND status='pending') pending_count,
     CASE WHEN EXISTS(SELECT 1 FROM jobs j WHERE status IN ('queued','running') AND ((type='extract' AND json_extract(payload,'$.id')=v.id) OR (type='extract_batch' AND EXISTS(SELECT 1 FROM json_each(j.payload,'$.ids') WHERE value=v.id)))) THEN 'Analyzing'
     WHEN v.content_hash IS NULL THEN 'Captions missing'
-    WHEN EXISTS(SELECT 1 FROM opinions WHERE video_id=v.id AND status='pending') THEN 'Needs review'
+    WHEN EXISTS(SELECT 1 FROM opinions WHERE video_id=v.id AND status='pending') OR EXISTS(SELECT 1 FROM statements WHERE video_id=v.id AND status IN ('unreviewed','quarantined')) THEN 'Needs review'
+    WHEN EXISTS(SELECT 1 FROM statements WHERE video_id=v.id AND status='reviewed') THEN 'Reviewed'
+    WHEN EXISTS(SELECT 1 FROM analysis_runs WHERE video_id=v.id AND status='done') THEN 'No supported opinions found'
+    WHEN EXISTS(SELECT 1 FROM analysis_runs WHERE video_id=v.id AND status='failed') THEN 'Analysis failed'
     WHEN v.status='extracted' OR EXISTS(SELECT 1 FROM opinions WHERE video_id=v.id) THEN 'Reviewed'
     WHEN v.error IS NOT NULL THEN 'Analysis failed'
     ELSE 'Ready to analyze' END analysis_state
@@ -93,7 +99,7 @@ export async function analyzeBatch(
       if (
         (e instanceof OpenAI.APIError &&
           [401, 403, 429].includes(e.status || 0)) ||
-        /monthly .*budget|Set OLLAMA_API_KEY/i.test(message)
+        /Set OLLAMA_API_KEY/i.test(message)
       )
         break;
     }
@@ -155,8 +161,34 @@ export function scheduleDiscovery(time = Date.now()) {
         "SELECT id FROM sources WHERE enabled=1 AND (next_check_at IS NULL OR next_check_at<=?) ORDER BY id",
       )
       .all(new Date(time).toISOString()) as { id: number }[];
-    for (const source of due) queueDiscovery(source.id, time);
+    for (const source of due) {
+      if (process.env.YOUTUBE_DATA_API_KEY) {
+        const row = db
+          .prepare("SELECT channel_id FROM sources WHERE id=?")
+          .get(source.id) as { channel_id: string | null };
+        if (row.channel_id) {
+          const cp = db
+            .prepare(
+              "SELECT discovery_complete FROM channel_checkpoints WHERE source_id=?",
+            )
+            .get(source.id) as { discovery_complete: number } | undefined;
+          syncChannel(source.id, !cp?.discovery_complete);
+        }
+      } else {
+        queueDiscovery(source.id, time);
+      }
+    }
   }).immediate();
+  scheduleInsights();
+  if (
+    !pipeline().catalog_checked_at &&
+    !db
+      .prepare(
+        "SELECT 1 FROM jobs WHERE type='catalog' AND status IN ('queued','running','failed')",
+      )
+      .get()
+  )
+    queue("catalog", {});
 }
 export function normalizeCaptions(
   segments: { text: string; offset: number; duration: number; lang?: string }[],
@@ -171,6 +203,9 @@ export function normalizeCaptions(
 export async function captions(id: string) {
   let milliseconds = false;
   let blocked = false;
+  let provenance = "YouTube captions (track provenance unavailable)";
+  let preferred:
+    { baseUrl: string; languageCode: string; kind?: string } | undefined;
   const segments = await YoutubeTranscript.fetchTranscript(id, {
     fetch: async (input, init) => {
       if (blocked) throw new YoutubeTranscriptTooManyRequestError();
@@ -189,6 +224,18 @@ export async function captions(id: string) {
         !["www.youtube.com", "youtube.com"].includes(u.hostname)
       )
         throw new Error("Unsupported caption host");
+      if (preferred && u.pathname.includes("timedtext")) {
+        const selected = new URL(preferred.baseUrl);
+        if (
+          selected.protocol !== "https:" ||
+          !["www.youtube.com", "youtube.com"].includes(selected.hostname) ||
+          selected.port ||
+          selected.username ||
+          selected.password
+        )
+          throw new Error("Unsupported caption track host");
+        input = selected.href;
+      }
       const response = await fetch(input, {
         ...init,
         redirect: "error",
@@ -198,7 +245,58 @@ export async function captions(id: string) {
         blocked = true;
         throw new YoutubeTranscriptTooManyRequestError();
       }
-      const body = await response.text();
+      let body = await response.text();
+      const marker = '"captionTracks":';
+      const at = body.indexOf(marker);
+      if (at >= 0) {
+        let begin = body.indexOf("[", at + marker.length),
+          end = begin,
+          depth = 0,
+          quoted = false,
+          escaped = false;
+        for (; end < body.length; end++) {
+          const c = body[end];
+          if (escaped) {
+            escaped = false;
+            continue;
+          }
+          if (quoted && c === "\\") {
+            escaped = true;
+            continue;
+          }
+          if (c === '"') {
+            quoted = !quoted;
+            continue;
+          }
+          if (!quoted) {
+            if (c === "[") depth++;
+            if (c === "]" && --depth === 0) break;
+          }
+        }
+        try {
+          const tracks = JSON.parse(body.slice(begin, end + 1)) as {
+            baseUrl: string;
+            languageCode: string;
+            kind?: string;
+          }[];
+          tracks.sort(
+            (a, b) =>
+              Number(a.kind === "asr") - Number(b.kind === "asr") ||
+              Number(!["ur", "en"].includes(a.languageCode)) -
+                Number(!["ur", "en"].includes(b.languageCode)),
+          );
+          preferred = tracks[0];
+          if (preferred)
+            provenance =
+              preferred.kind === "asr"
+                ? "YouTube automatic captions"
+                : "YouTube creator-supplied captions";
+          body =
+            body.slice(0, begin) + JSON.stringify(tracks) + body.slice(end + 1);
+        } catch {
+          /* Metadata unavailable; keep original response. */
+        }
+      }
       if (Buffer.byteLength(body) > 3_000_000)
         throw new Error("Caption response exceeds size limit");
       if (/<p\s+t="\d+"\s+d="\d+"/.test(body)) milliseconds = true;
@@ -210,7 +308,11 @@ export async function captions(id: string) {
   });
   if (!segments.length)
     throw new Error("No usable captions; import TXT/SRT/VTT instead");
-  return normalizeCaptions(segments, milliseconds);
+  return normalizeCaptions(segments, milliseconds).map((s) => ({
+    ...s,
+    lang: preferred?.languageCode || s.lang,
+    provenance,
+  }));
 }
 export function groupCaptions(segments: { text: string; offset: number }[]) {
   const result: { text: string; offset: number }[] = [];
@@ -263,19 +365,17 @@ export async function discover(
     ),
   );
   const cutoff = new Date(Date.now() - 90 * 86400000).toISOString();
-  const relevant = entries
-    .filter(
-      (v) =>
-        v.published_at >= cutoff &&
-        v.published_at <= now() &&
-        (s.kind === "institutional" ||
-          /psx|stock|invest|market|dividend|earnings|سٹاک|سرمایہ|شیئر/i.test(
-            v.title,
-          )),
-    )
-    .slice(0, 10);
+  const relevant = entries.filter(
+    (v) => v.published_at >= cutoff && v.published_at <= now(),
+  );
   let captionCount = 0;
   for (const v of relevant) {
+    if (
+      !db
+        .prepare("SELECT 1 FROM sources WHERE id=? AND enabled=1")
+        .get(sourceId)
+    )
+      return "Paused after current caption request; saved evidence preserved";
     progress(`Checking ${v.title.slice(0, 80)}`);
     const existing = db
       .prepare(
@@ -318,6 +418,17 @@ export async function discover(
           v.id,
         );
       }).immediate();
+      indexVideo(
+        v.id,
+        segments.map((s) => ({
+          text: s.text,
+          start_seconds: s.offset,
+          end_seconds: s.duration > 0 ? s.offset + s.duration : null,
+        })),
+        segments[0]?.lang || "unknown",
+        segments[0]?.provenance || "YouTube captions",
+      );
+      scheduleInsights();
       captionCount++;
     } catch (e) {
       db.prepare(
@@ -327,7 +438,7 @@ export async function discover(
     }
     await new Promise((r) => setTimeout(r, 1500));
   }
-  return `Discovered ${relevant.length} videos; ${captionCount} caption imports. Videos without captions need manual transcripts.`;
+  return `Recent feed only; full-period discovery incomplete. Discovered ${relevant.length} videos; ${captionCount} caption imports. Videos without captions need manual transcripts.`;
 }
 export async function runJob(job: {
   id: number;
@@ -339,6 +450,71 @@ export async function runJob(job: {
     db
       .prepare("UPDATE jobs SET progress=?,updated_at=? WHERE id=?")
       .run(text, now(), job.id);
+  if (job.type === "catalog") return refreshCatalog();
+  if (job.type === "insights") return analyzeInsights(p.id, progress);
+  if (job.type === "channel_sync") {
+    try {
+      return await collectChannel(p.source_id, progress, async (id) => {
+        db.prepare("UPDATE videos SET caption_attempted_at=? WHERE id=?").run(
+          now(),
+          id,
+        );
+        try {
+          const segments = await captions(id);
+          const text = segments.map((s) => s.text).join(" ");
+          if (text.length > 120000)
+            throw new Error("Transcript exceeds import limit");
+          db.transaction(() => {
+            if (
+              db
+                .prepare(
+                  "SELECT 1 FROM videos WHERE id=? AND content_hash IS NOT NULL",
+                )
+                .get(id)
+            )
+              return;
+            for (const s of groupCaptions(segments))
+              db.prepare(
+                "INSERT INTO passages(video_id,start_seconds,text) VALUES(?,?,?)",
+              ).run(id, s.offset, s.text);
+            db.prepare(
+              "UPDATE videos SET content_hash=?,language=?,status='imported',error=NULL WHERE id=?",
+            ).run(
+              createHash("sha256").update(text).digest("hex"),
+              segments[0]?.lang || "unknown",
+              id,
+            );
+            indexVideo(
+              id,
+              segments.map((s) => ({
+                text: s.text,
+                start_seconds: s.offset,
+                end_seconds: s.duration > 0 ? s.offset + s.duration : null,
+              })),
+              segments[0]?.lang || "unknown",
+              segments[0]?.provenance || "YouTube captions",
+            );
+          }).immediate();
+          scheduleInsights();
+        } catch (e) {
+          db.prepare(
+            "UPDATE videos SET status='needs_transcript',error=? WHERE id=? AND content_hash IS NULL",
+          ).run(
+            e instanceof Error ? e.message : "Caption collection failed",
+            id,
+          );
+          if (e instanceof YoutubeTranscriptTooManyRequestError) throw e;
+        }
+        await new Promise((r) => setTimeout(r, 1500));
+      });
+    } catch (e) {
+      db.prepare("UPDATE sources SET last_error=? WHERE id=?").run(
+        e instanceof Error ? e.message : "Collection failed",
+        p.source_id,
+      );
+      throw e;
+    }
+  }
   if (job.type === "refresh") {
     const list = (p.symbols as string[]).map((s) => symbolSchema.parse(s));
     const failures: string[] = [];
@@ -358,12 +534,14 @@ export async function runJob(job: {
   }
   if (job.type === "import") {
     const r = importTranscript(p);
+    indexVideo(r.id, undefined, p.language, "User-supplied transcript");
+    scheduleInsights();
     progress(
       r.duplicate ? "Existing transcript preserved" : "Transcript saved",
     );
     return r.duplicate
       ? "Duplicate skipped"
-      : "Transcript imported. Ready to analyze when you choose.";
+      : "Transcript indexed and searchable. Automatic insights queued when Ollama is available.";
   }
   if (job.type === "extract" || job.type === "extract_batch") {
     return analyzeBatch(job.type === "extract" ? [p.id] : p.ids, progress);
@@ -391,7 +569,7 @@ export function claimJob() {
     .transaction(() => {
       const j = db
         .prepare(
-          "SELECT id,type,payload FROM jobs WHERE status='queued' ORDER BY id LIMIT 1",
+          "SELECT id,type,payload FROM jobs WHERE status='queued' ORDER BY CASE WHEN type='insights' THEN 1 ELSE 0 END,CASE WHEN type='insights' THEN (SELECT julianday(published_at) FROM videos WHERE id=json_extract(jobs.payload,'$.id')) END DESC,id LIMIT 1",
         )
         .get() as { id: number; type: string; payload: string } | undefined;
       if (j)

@@ -1,5 +1,15 @@
 "use client";
-import { useCallback, useEffect, useLayoutEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
+import {
+  BookOpen,
+  FileText,
+  CheckCheck,
+  Clock3,
+  Settings2,
+} from "lucide-react";
+import { Modal, PageControls, ReadableError } from "./research-ui";
+import ResearchSettings from "./research-settings";
+import ExpertDesk from "./expert-desk";
 import { today } from "@/lib/time";
 import type { Company, Opinion, Table, Citation, Evidence } from "@/lib/types";
 type Source = {
@@ -50,7 +60,6 @@ type State = {
   sources: Source[];
   videos: Video[];
   jobs: Job[];
-  budget: { used: number; remaining: number; limit: number };
   gate: { enabled: boolean; reviewed: number; accuracy: number };
   aiConfigured: boolean;
   aiProvider: string;
@@ -139,6 +148,8 @@ function FinancialTable({ title, t }: { title: string; t: Table }) {
 export default function Desk() {
   const [state, setState] = useState<State | null>(null),
     [tab, setTab] = useState("Research"),
+    [researchMode, setResearchMode] = useState("expert"),
+    [expertChannel, setExpertChannel] = useState<number | null>(null),
     [error, setError] = useState(""),
     [notice, setNotice] = useState(""),
     [pending, setPending] = useState(false),
@@ -159,6 +170,10 @@ export default function Desk() {
   const [loadError, setLoadError] = useState(""),
     [chatError, setChatError] = useState("");
   const [lastJob, setLastJob] = useState<number | null>(null);
+  const [videoPage, setVideoPage] = useState(0),
+    [reviewPage, setReviewPage] = useState(0),
+    [jobPage, setJobPage] = useState(0),
+    [videoSearch, setVideoSearch] = useState("");
   const [videoFilter, setVideoFilter] = useState("all"),
     [sourceFilter, setSourceFilter] = useState("all");
   const [preview, setPreview] = useState<{
@@ -189,17 +204,37 @@ export default function Desk() {
           ].slice(0, 4) as string[],
         );
     } catch {}
+    try {
+      const p = JSON.parse(
+        localStorage.getItem("psx-desk-preferences") || "{}",
+      );
+      if (["expert", "company"].includes(p.researchMode))
+        setResearchMode(p.researchMode);
+    } catch {}
+    const q = new URLSearchParams(location.search);
+    const section = q.get("section");
+    if (section && tabs.includes(section)) setTab(section);
+    const research = q.get("research");
+    if (research && ["expert", "company"].includes(research))
+      setResearchMode(research);
+    const f = q.get("companyFilter");
+    if (f && ["all", "watchlist", "shariah"].includes(f)) setFilter(f);
     setPreferencesLoaded(true);
   }, []);
   useEffect(() => {
     if (!preferencesLoaded || filter === "auto") return;
+    const q = new URLSearchParams(location.search);
+    q.set("section", tab);
+    q.set("research", researchMode);
+    q.set("companyFilter", filter);
+    history.replaceState(null, "", `${location.pathname}?${q}`);
     try {
       localStorage.setItem(
         "psx-desk-preferences",
-        JSON.stringify({ tab, filter, selected }),
+        JSON.stringify({ tab, filter, selected, researchMode }),
       );
     } catch {}
-  }, [preferencesLoaded, tab, filter, selected]);
+  }, [preferencesLoaded, tab, filter, selected, researchMode]);
   useEffect(() => {
     if (state && preferencesLoaded && filter === "auto")
       setFilter(state.companies.some((c) => c.watched) ? "watchlist" : "all");
@@ -252,43 +287,6 @@ export default function Desk() {
     const t = setInterval(refresh, 2500);
     return () => clearInterval(t);
   }, [refresh]);
-  useLayoutEffect(() => {
-    if (!review && !source && !preview && !evidencePreview) return;
-    const previous = document.activeElement as HTMLElement | null;
-    const modal = document.querySelector<HTMLElement>(".modal");
-    const focusable = () =>
-      Array.from(
-        modal?.querySelectorAll<HTMLElement>(
-          "button,input,select,textarea,a[href]",
-        ) || [],
-      ).filter((e) => !e.hasAttribute("disabled"));
-    focusable()[0]?.focus();
-    function keys(e: KeyboardEvent) {
-      if (e.key === "Escape") {
-        setReview(null);
-        setSource(null);
-        setPreview(null);
-        setEvidencePreview(null);
-      }
-      if (e.key === "Tab") {
-        const items = focusable(),
-          first = items[0],
-          last = items.at(-1);
-        if (e.shiftKey && document.activeElement === first) {
-          e.preventDefault();
-          last?.focus();
-        } else if (!e.shiftKey && document.activeElement === last) {
-          e.preventDefault();
-          first?.focus();
-        }
-      }
-    }
-    document.addEventListener("keydown", keys);
-    return () => {
-      document.removeEventListener("keydown", keys);
-      previous?.focus();
-    };
-  }, [review, source, preview, evidencePreview]);
   async function action(path: string, input: unknown) {
     setPending(true);
     setError("");
@@ -389,6 +387,9 @@ export default function Desk() {
         (videoFilter === "all" || v.analysis_state === videoFilter) &&
         (sourceFilter === "all" || String(v.source_id) === sourceFilter),
     ) || [];
+  const filteredVideos = visibleVideos.filter((v) =>
+    `${v.title} ${v.speaker}`.toLowerCase().includes(videoSearch.toLowerCase()),
+  );
   const approvedContext =
     state?.opinions.filter(
       (o) =>
@@ -399,6 +400,7 @@ export default function Desk() {
     ).length || 0;
   function focusResearch(target: string) {
     setTab("Research");
+    setResearchMode("company");
     setDetail(null);
     requestAnimationFrame(() =>
       document
@@ -408,11 +410,14 @@ export default function Desk() {
   }
   return (
     <div className="desk">
+      <a className="skip-link" href="#main-content">
+        Skip to content
+      </a>
       <aside className="sidebar">
-        <a className="brand" href="/" aria-label="PSX Research Desk home">
+        <a className="brand" href="/" aria-label="PSX Perspectives home">
           <Mark />
           <span>
-            PSX<span>Research Desk</span>
+            PSX<span>Perspectives</span>
           </span>
         </a>
         <div className="workspace">
@@ -424,6 +429,13 @@ export default function Desk() {
             <button
               key={t}
               className={tab === t ? "nav-item active" : "nav-item"}
+              aria-label={t}
+              aria-describedby={
+                t === "Review" && pendingReviews > 0
+                  ? "pending-review-count"
+                  : undefined
+              }
+              aria-current={tab === t ? "page" : undefined}
               onClick={() => {
                 setTab(t);
                 setDetail(null);
@@ -431,11 +443,27 @@ export default function Desk() {
               }}
             >
               <span className="nav-icon" aria-hidden="true">
-                {["▦", "▤", "✓", "◷", "⚙"][i]}
+                {(() => {
+                  const Icon = [
+                    BookOpen,
+                    FileText,
+                    CheckCheck,
+                    Clock3,
+                    Settings2,
+                  ][i];
+                  return <Icon size={18} />;
+                })()}
               </span>
               {t}
               {t === "Review" && pendingReviews > 0 && (
-                <span className="count">{pendingReviews}</span>
+                <>
+                  <span className="count" aria-hidden="true">
+                    {pendingReviews}
+                  </span>
+                  <span className="sr-only" id="pending-review-count">
+                    {pendingReviews} pending reviews
+                  </span>
+                </>
               )}
             </button>
           ))}
@@ -444,24 +472,12 @@ export default function Desk() {
           <h3>Evidence before conviction.</h3>
           <p>Company facts and expert views, with the sources kept in sight.</p>
         </div>
-        <div className="budget">
-          <div>
-            <span>Monthly AI budget</span>
-            <strong>${fmt(state?.budget.remaining ?? 10)} left</strong>
-          </div>
-          <progress
-            value={state?.budget.used || 0}
-            max="10"
-            aria-label="Monthly AI spend"
-          />
-          <small>${fmt(state?.budget.used || 0)} of $10 used</small>
-        </div>
         <div className="worker">
           <span className={`dot ${state?.workerOnline ? "" : "offline"}`} />
           {state?.workerOnline ? "Ingestion worker online" : "Worker offline"}
         </div>
       </aside>
-      <main>
+      <main id="main-content" tabIndex={-1}>
         <header className="topbar">
           <span>
             Pakistan Stock Exchange{" "}
@@ -482,59 +498,72 @@ export default function Desk() {
               <small>{loadError}</small>
             </div>
           )}
-          {currentJob && (
-            <div
-              className={`alert ${currentJob.status === "failed" ? "danger" : ""}`}
-              role="status"
-            >
-              <strong>
-                Job #{currentJob.id}: {currentJob.status}
-              </strong>
-              <span>{currentJob.progress}</span>
-              {currentJob.error && <p>{currentJob.error}</p>}
-              {currentJob.status === "failed" && (
-                <button
-                  disabled={pending}
-                  onClick={() => action("retry", { id: currentJob.id })}
-                >
-                  {currentJob.type === "extract" ||
-                  currentJob.type === "extract_batch"
-                    ? "Retry failed or unprocessed analysis"
-                    : "Retry job"}
-                </button>
-              )}
-            </div>
-          )}
-          {tab === "Research" && selected.length > 0 && (
-            <div className="comparison-tray" aria-label="Comparison selection">
-              <strong>{selected.length}/4 selected</strong>
-              {selected.map((symbol) => (
-                <button
-                  key={symbol}
-                  className="secondary"
-                  aria-label={`Remove ${symbol} from comparison`}
-                  onClick={() => toggle(symbol)}
-                >
-                  {symbol} ×
-                </button>
-              ))}
-              <button onClick={() => setSelected([])}>Clear</button>
-              <button onClick={() => focusResearch("comparison")}>
-                Compare
-              </button>
-              <button
-                className="primary"
-                onClick={() => {
-                  focusResearch("research-chat");
-                  requestAnimationFrame(() =>
-                    document.getElementById("question")?.focus(),
-                  );
-                }}
+          {currentJob &&
+            (tab === "Transcripts" ||
+              tab === "Activity" ||
+              (tab === "Research" && researchMode === "company")) && (
+              <div
+                className={`alert ${currentJob.status === "failed" ? "danger" : ""}`}
+                role="status"
               >
-                Ask about selection
-              </button>
-            </div>
-          )}
+                <strong>
+                  Job #{currentJob.id}: {currentJob.status}
+                </strong>
+                <span>{currentJob.progress}</span>
+                {currentJob.error && (
+                  <details>
+                    <summary>Failure details</summary>
+                    <ReadableError message={currentJob.error} />
+                  </details>
+                )}
+                {currentJob.status === "failed" && (
+                  <button
+                    disabled={pending}
+                    onClick={() => action("retry", { id: currentJob.id })}
+                  >
+                    {currentJob.type === "extract" ||
+                    currentJob.type === "extract_batch"
+                      ? "Retry failed or unprocessed analysis"
+                      : "Retry job"}
+                  </button>
+                )}
+              </div>
+            )}
+          {tab === "Research" &&
+            researchMode === "company" &&
+            selected.length > 0 && (
+              <div
+                className="comparison-tray"
+                aria-label="Comparison selection"
+              >
+                <strong>{selected.length}/4 selected</strong>
+                {selected.map((symbol) => (
+                  <button
+                    key={symbol}
+                    className="secondary"
+                    aria-label={`Remove ${symbol} from comparison`}
+                    onClick={() => toggle(symbol)}
+                  >
+                    {symbol} ×
+                  </button>
+                ))}
+                <button onClick={() => setSelected([])}>Clear</button>
+                <button onClick={() => focusResearch("comparison")}>
+                  Compare
+                </button>
+                <button
+                  className="primary"
+                  onClick={() => {
+                    focusResearch("research-chat");
+                    requestAnimationFrame(() =>
+                      document.getElementById("question")?.focus(),
+                    );
+                  }}
+                >
+                  Ask about selection
+                </button>
+              </div>
+            )}
           {error && (
             <div className="alert danger" role="alert">
               {error}
@@ -554,14 +583,18 @@ export default function Desk() {
                 {company
                   ? company.symbol
                   : tab === "Research"
-                    ? "My research desk"
+                    ? researchMode === "expert"
+                      ? "Expert perspectives"
+                      : "Company research"
                     : tab}
               </h1>
               <p>
                 {company
                   ? company.name
                   : tab === "Research"
-                    ? "Start with your watchlist. Compare companies and inspect the evidence."
+                    ? researchMode === "expert"
+                      ? "Follow expert channels, search dated transcripts, and inspect what they said."
+                      : "Start with your watchlist. Compare companies and inspect the evidence."
                     : tab === "Transcripts"
                       ? "Build a dated library of the voices you follow."
                       : tab === "Review"
@@ -571,7 +604,7 @@ export default function Desk() {
                           : "Manage research sources and verified classifications."}
               </p>
             </div>
-            {tab === "Research" && !detail && (
+            {tab === "Research" && researchMode === "company" && !detail && (
               <button
                 className="primary"
                 disabled={pending || !state}
@@ -590,11 +623,50 @@ export default function Desk() {
               </button>
             )}
           </div>
+          {tab === "Research" && (
+            <div
+              className="research-switch"
+              role="group"
+              aria-label="Research view"
+            >
+              <button
+                className={researchMode === "expert" ? "primary" : ""}
+                onClick={() => {
+                  setResearchMode("expert");
+                  setDetail(null);
+                }}
+              >
+                Expert research
+              </button>
+              <button
+                className={researchMode === "company" ? "primary" : ""}
+                onClick={() => setResearchMode("company")}
+              >
+                Company research
+              </button>
+            </div>
+          )}
+          {tab === "Research" && researchMode === "expert" && state && (
+            <ExpertDesk
+              initialChannel={expertChannel}
+              workerOnline={state.workerOnline}
+              jobs={state.jobs}
+            />
+          )}
           {!state ? (
-            <div className="empty">Loading your research workspace…</div>
+            <div
+              className="workspace-skeleton"
+              role="status"
+              aria-label="Loading your research workspace"
+            >
+              <div className="skeleton" />
+              <div className="skeleton" />
+              <div className="skeleton" />
+              <span>Loading your research workspace…</span>
+            </div>
           ) : (
             <>
-              {tab === "Research" && !detail && (
+              {tab === "Research" && researchMode === "company" && !detail && (
                 <>
                   <div className="status-strip" aria-label="Research status">
                     <button
@@ -776,9 +848,6 @@ export default function Desk() {
                     <section className="panel chat-panel" id="research-chat">
                       <div className="panel-header">
                         <div>
-                          <span className="assistant-mark" aria-hidden="true">
-                            ✧
-                          </span>
                           <h2>Ask your research desk</h2>
                           <p>Answers grounded in your saved evidence.</p>
                         </div>
@@ -805,7 +874,7 @@ export default function Desk() {
                             <div className="evidence-note">
                               {state.aiConfigured
                                 ? "AI is connected. Only relevant saved evidence is sent to the provider."
-                                : "Connect an OpenAI API key in .env to enable AI. Company research and imports work without it."}
+                                : "Configure your Ollama API key in .env to enable AI. Company research and imports work without it."}
                             </div>
                           </>
                         )}
@@ -1193,8 +1262,11 @@ export default function Desk() {
                 </>
               )}
               {tab === "Transcripts" && (
-                <div className="library-grid">
-                  <section className="panel padded">
+                <div className="transcript-workspace">
+                  <section
+                    className="panel padded transcript-import"
+                    aria-label="Transcript importer"
+                  >
                     <h2>Import a transcript</h2>
                     <p>
                       Use a real video URL and publication date. Captions can be
@@ -1310,14 +1382,32 @@ export default function Desk() {
                       </button>
                     </form>
                   </section>
-                  <section>
+                  <section
+                    className="transcript-library"
+                    aria-label="Transcript library"
+                  >
                     <div className="panel padded">
                       <h2>Your transcripts</h2>
+                      <label className="transcript-search">
+                        Search transcripts
+                        <input
+                          type="search"
+                          value={videoSearch}
+                          onChange={(e) => {
+                            setVideoSearch(e.target.value);
+                            setVideoPage(0);
+                          }}
+                          placeholder="Video title or speaker…"
+                        />
+                      </label>
                       <div className="toolbar">
                         <select
                           aria-label="Filter transcripts by source"
                           value={sourceFilter}
-                          onChange={(e) => setSourceFilter(e.target.value)}
+                          onChange={(e) => {
+                            setSourceFilter(e.target.value);
+                            setVideoPage(0);
+                          }}
                         >
                           <option value="all">All sources</option>
                           {state.sources.map((s) => (
@@ -1330,7 +1420,10 @@ export default function Desk() {
                         <select
                           aria-label="Filter transcripts by status"
                           value={videoFilter}
-                          onChange={(e) => setVideoFilter(e.target.value)}
+                          onChange={(e) => {
+                            setVideoFilter(e.target.value);
+                            setVideoPage(0);
+                          }}
                         >
                           <option value="all">All statuses</option>
                           {[
@@ -1362,67 +1455,93 @@ export default function Desk() {
                         Analyze ready transcripts ({ready.length})
                       </button>
                       <p className="muted">
-                        Newest ten ready transcripts per batch. Analysis uses
-                        cloud credits; opinions need review.{" "}
+                        Automatic insights appear in Expert research. This
+                        optional batch extracts opinions for company scorecards;
+                        those opinions need review. Newest ten per batch.{" "}
                         {!state.aiConfigured &&
                           "Configure the AI key in Settings first."}
                       </p>
                       {state.videos.length ? (
-                        visibleVideos.map((v) => (
-                          <article className="video" key={v.id}>
-                            <span className="badge">{v.analysis_state}</span>
-                            <h3>
-                              <a href={v.url} target="_blank" rel="noreferrer">
-                                {v.title} ↗
-                              </a>
-                            </h3>
-                            <p>
-                              {v.speaker} · {date(v.published_at)}
-                            </p>
-                            {v.error && <p className="negative">{v.error}</p>}
-                            <button
-                              className="text-button"
-                              onClick={() => openTranscript(v.id)}
-                            >
-                              Preview transcript
-                            </button>
-                            {v.status === "extracted" && !v.opinion_count && (
-                              <p>No supported opinions found.</p>
-                            )}
-                            {v.analysis_state === "Needs review" && (
+                        filteredVideos
+                          .slice(videoPage * 25, (videoPage + 1) * 25)
+                          .map((v) => (
+                            <article className="video" key={v.id}>
+                              <span className="badge">{v.analysis_state}</span>
+                              {v.source_id && (
+                                <button
+                                  onClick={() => {
+                                    setExpertChannel(v.source_id);
+                                    setResearchMode("expert");
+                                    setTab("Research");
+                                  }}
+                                >
+                                  Open expert timeline
+                                </button>
+                              )}
+                              <h3>
+                                <a
+                                  href={v.url}
+                                  target="_blank"
+                                  rel="noreferrer"
+                                >
+                                  {v.title} ↗
+                                </a>
+                              </h3>
+                              <p>
+                                {v.speaker} · {date(v.published_at)}
+                              </p>
+                              {v.error && <p className="negative">{v.error}</p>}
                               <button
-                                className="secondary"
-                                onClick={() => setTab("Review")}
+                                className="text-button"
+                                onClick={() => openTranscript(v.id)}
                               >
-                                Review opinions ({v.pending_count})
+                                Preview transcript
                               </button>
-                            )}
-                            {["Ready to analyze", "Analysis failed"].includes(
-                              v.analysis_state,
-                            ) && (
-                              <button
-                                className="secondary"
-                                disabled={
-                                  pending ||
-                                  !state.aiConfigured ||
-                                  !state.workerOnline
-                                }
-                                onClick={() => action("extract", { id: v.id })}
-                              >
-                                Analyze transcript
-                              </button>
-                            )}
-                          </article>
-                        ))
+                              {v.status === "extracted" && !v.opinion_count && (
+                                <p>No supported opinions found.</p>
+                              )}
+                              {v.analysis_state === "Needs review" && (
+                                <button
+                                  className="secondary"
+                                  onClick={() => setTab("Review")}
+                                >
+                                  Review opinions ({v.pending_count})
+                                </button>
+                              )}
+                              {["Ready to analyze", "Analysis failed"].includes(
+                                v.analysis_state,
+                              ) && (
+                                <button
+                                  className="secondary"
+                                  disabled={
+                                    pending ||
+                                    !state.aiConfigured ||
+                                    !state.workerOnline
+                                  }
+                                  onClick={() =>
+                                    action("extract", { id: v.id })
+                                  }
+                                >
+                                  Analyze transcript
+                                </button>
+                              )}
+                            </article>
+                          ))
                       ) : (
                         <div className="empty compact">
                           No videos yet. Import a transcript or discover videos
                           from a verified source.
                         </div>
                       )}
-                      {state.videos.length > 0 && !visibleVideos.length && (
+                      {state.videos.length > 0 && !filteredVideos.length && (
                         <p>No transcripts match these filters.</p>
                       )}
+                      <PageControls
+                        page={videoPage}
+                        total={filteredVideos.length}
+                        onChange={setVideoPage}
+                        label="transcripts"
+                      />
                     </div>
                     <div className="panel padded">
                       <h2>Automatic caption collection</h2>
@@ -1479,47 +1598,89 @@ export default function Desk() {
                     {state.gate.enabled ? "enabled" : "disabled"}.
                   </div>
                   <section className="panel padded">
-                    {state.opinions.length ? (
-                      state.opinions.map((o) => (
-                        <article className="review-row" key={o.id}>
-                          <div>
-                            <span className="badge">{o.status}</span>
-                            <strong>{o.symbol}</strong>
-                            <span>
-                              {o.speaker} · {o.stance}
-                            </span>
-                            <blockquote dir="auto">{o.quote}</blockquote>
-                            <p>{o.rationale}</p>
-                            <a
-                              href={`${o.url}${o.start_seconds !== null ? `&t=${Math.floor(o.start_seconds)}` : ""}`}
-                              target="_blank"
-                              rel="noreferrer"
-                            >
-                              Verify original video ↗
-                            </a>
-                            <small>
-                              {o.correct === null
-                                ? "Not assessed"
-                                : o.correct
-                                  ? "Extraction matched human reference"
-                                  : "Extraction needed correction"}
-                              {o.hypothetical ? " · Hypothetical example" : ""}
-                            </small>
-                          </div>
+                    <h2>Automatic insights</h2>
+                    <p className="muted">
+                      Review channel statements alongside their original
+                      transcript. Automatic insights remain distinct from
+                      approved company opinions.
+                    </p>
+                    <div className="expert-actions">
+                      {state.sources
+                        .filter((s) => s.channel_id)
+                        .map((s) => (
                           <button
-                            className="secondary"
-                            onClick={() => setReview(o)}
+                            key={s.id}
+                            onClick={() => {
+                              setExpertChannel(s.id);
+                              setResearchMode("expert");
+                              setTab("Research");
+                              const q = new URLSearchParams(location.search);
+                              q.set("view", "channel");
+                              q.set("channel", String(s.id));
+                              history.replaceState(
+                                null,
+                                "",
+                                `${location.pathname}?${q}`,
+                              );
+                            }}
                           >
-                            Review passage
+                            Review {s.name}
                           </button>
-                        </article>
-                      ))
+                        ))}
+                    </div>
+                  </section>
+                  <section className="panel padded">
+                    {state.opinions.length ? (
+                      state.opinions
+                        .slice(reviewPage * 25, (reviewPage + 1) * 25)
+                        .map((o) => (
+                          <article className="review-row" key={o.id}>
+                            <div>
+                              <span className="badge">{o.status}</span>
+                              <strong>{o.symbol}</strong>
+                              <span>
+                                {o.speaker} · {o.stance}
+                              </span>
+                              <blockquote dir="auto">{o.quote}</blockquote>
+                              <p>{o.rationale}</p>
+                              <a
+                                href={`${o.url}${o.start_seconds !== null ? `&t=${Math.floor(o.start_seconds)}` : ""}`}
+                                target="_blank"
+                                rel="noreferrer"
+                              >
+                                Verify original video ↗
+                              </a>
+                              <small>
+                                {o.correct === null
+                                  ? "Not assessed"
+                                  : o.correct
+                                    ? "Extraction matched human reference"
+                                    : "Extraction needed correction"}
+                                {o.hypothetical
+                                  ? " · Hypothetical example"
+                                  : ""}
+                              </small>
+                            </div>
+                            <button
+                              className="secondary"
+                              onClick={() => setReview(o)}
+                            >
+                              Review passage
+                            </button>
+                          </article>
+                        ))
                     ) : (
                       <div className="empty">
                         No extracted opinions yet. Import a transcript and
                         connect an API key to begin extraction.
                       </div>
                     )}
+                    <PageControls
+                      page={reviewPage}
+                      total={state.opinions.length}
+                      onChange={setReviewPage}
+                      label="reviews"
+                    />
                   </section>
                 </>
               )}
@@ -1538,42 +1699,51 @@ export default function Desk() {
                     </div>
                   )}
                   {state.jobs.length ? (
-                    state.jobs.map((j) => (
-                      <article className="job" key={j.id}>
-                        <div>
-                          <span
-                            className={`badge ${j.status === "failed" ? "red" : ""}`}
-                          >
-                            {j.status}
-                          </span>
-                          <strong>
-                            #{j.id} {j.type}
-                          </strong>
-                          <p>{j.progress}</p>
-                          {j.error && <p className="negative">{j.error}</p>}
-                          <small>{date(j.updated_at)}</small>
-                        </div>
-                        {j.status === "failed" && (
-                          <button
-                            className="secondary"
-                            disabled={pending}
-                            onClick={() => action("retry", { id: j.id })}
-                          >
-                            Retry job
-                          </button>
-                        )}
-                      </article>
-                    ))
+                    state.jobs
+                      .slice(jobPage * 25, (jobPage + 1) * 25)
+                      .map((j) => (
+                        <article className="job" key={j.id}>
+                          <div>
+                            <span
+                              className={`badge ${j.status === "failed" ? "red" : ""}`}
+                            >
+                              {j.status}
+                            </span>
+                            <strong>
+                              #{j.id} {j.type.replaceAll("_", " ")}
+                            </strong>
+                            <p>{j.progress}</p>
+                            {j.error && <ReadableError message={j.error} />}
+                            <small>{date(j.updated_at)}</small>
+                          </div>
+                          {j.status === "failed" && (
+                            <button
+                              className="secondary"
+                              disabled={pending}
+                              onClick={() => action("retry", { id: j.id })}
+                            >
+                              Retry job
+                            </button>
+                          )}
+                        </article>
+                      ))
                   ) : (
                     <div className="empty">
                       No jobs yet. Refresh PSX data or import a video
                       transcript.
                     </div>
                   )}
+                  <PageControls
+                    page={jobPage}
+                    total={state.jobs.length}
+                    onChange={setJobPage}
+                    label="jobs"
+                  />
                 </section>
               )}
               {tab === "Settings" && (
                 <div className="library-grid">
+                  <ResearchSettings state={state} />
                   <section className="panel padded">
                     <div className="panel-header">
                       <h2>Research sources</h2>
@@ -1612,32 +1782,6 @@ export default function Desk() {
                         </button>
                       </div>
                     ))}
-                    <h3>AI and storage</h3>
-                    <p>
-                      {state.aiConfigured
-                        ? `${state.aiProvider} configured on the server (${state.aiModel}).`
-                        : "AI key not configured. Set OLLAMA_API_KEY or OPENAI_API_KEY in .env and restart."}
-                    </p>
-                    <p>
-                      Estimated model usage: ${fmt(state.budget.used)} / $10.
-                      Reservations remain held when a provider timeout leaves
-                      billing uncertain.
-                    </p>
-                    {state.aiProvider === "Ollama Cloud" && (
-                      <p>
-                        Ollama starter credits are limited. This app tracks
-                        model usage, not your account credit balance. No
-                        paid-provider fallback is enabled.
-                      </p>
-                    )}
-                    <p>
-                      Research data stays in the local database. Relevant
-                      evidence is sent to {state.aiProvider} when extracting
-                      opinions or asking questions.
-                    </p>
-                    <a href="/api/export?format=markdown">
-                      Export research as Markdown
-                    </a>
                   </section>
                   <section className="panel padded">
                     <h2>Shariah classification</h2>
@@ -1714,49 +1858,49 @@ export default function Desk() {
         </div>
       </main>
       {review && (
-        <div className="modal-backdrop">
-          <section
-            className="modal"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="review-title"
-          >
-            <button
-              className="close"
-              aria-label="Close review"
-              onClick={() => setReview(null)}
-            >
-              ×
-            </button>
-            <h2 id="review-title">Review the original passage</h2>
-            <p>
-              Passage timestamp:{" "}
-              {review.start_seconds == null
-                ? "Not supplied"
-                : `${review.start_seconds}s`}{" "}
-              <a
-                href={
-                  review.start_seconds == null
-                    ? review.url
-                    : review.url + `&t=${Math.floor(review.start_seconds)}`
-                }
-                target="_blank"
-                rel="noreferrer"
-              >
-                Open original video
-              </a>
-            </p>
-            <details open>
-              <summary>Original passage</summary>
-              <p className="passage-text" dir="auto">
-                {reviewPassage}
+        <Modal
+          key={review.id}
+          title={"Review the original passage"}
+          close={() => setReview(null)}
+          closeLabel="Close review"
+          className="legacy-modal"
+        >
+          {error && (
+            <div className="alert danger" role="alert">
+              <ReadableError message={error} />
+            </div>
+          )}
+          <div className="statement-review">
+            <aside className="review-original">
+              <p>
+                Passage timestamp:{" "}
+                {review.start_seconds == null
+                  ? "Not supplied"
+                  : `${review.start_seconds}s`}{" "}
+                <a
+                  href={
+                    review.start_seconds == null
+                      ? review.url
+                      : review.url + `&t=${Math.floor(review.start_seconds)}`
+                  }
+                  target="_blank"
+                  rel="noreferrer"
+                >
+                  Open original video
+                </a>
               </p>
-            </details>
-            <blockquote dir="auto">{review.quote}</blockquote>
-            <p className="muted">
-              Original extraction: {review.extracted_symbol} ·{" "}
-              {review.extracted_stance}
-            </p>
+              <details open>
+                <summary>Original passage</summary>
+                <p className="passage-text" dir="auto">
+                  {reviewPassage}
+                </p>
+              </details>
+              <blockquote dir="auto">{review.quote}</blockquote>
+              <p className="muted">
+                Original extraction: {review.extracted_symbol} ·{" "}
+                {review.extracted_stance}
+              </p>
+            </aside>{" "}
             <form
               key={review.id}
               className="stack"
@@ -1869,162 +2013,139 @@ export default function Desk() {
                 Save and next
               </button>
             </form>
-          </section>
-        </div>
+          </div>
+        </Modal>
       )}
       {(preview || evidencePreview) && (
-        <div className="modal-backdrop">
-          <section
-            className="modal"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="preview-title"
-          >
-            <button
-              className="close"
-              aria-label="Close preview"
-              onClick={() => {
-                setPreview(null);
-                setEvidencePreview(null);
-              }}
-            >
-              ×
-            </button>
-            <h2 id="preview-title">
-              {preview ? preview.video.title : "Saved evidence"}
-            </h2>
-            {preview && (
-              <>
+        <Modal
+          title={preview ? preview.video.title : "Saved evidence"}
+          close={() => {
+            setPreview(null);
+            setEvidencePreview(null);
+          }}
+          closeLabel="Close preview"
+          className="legacy-modal"
+        >
+          {preview && (
+            <>
+              <p>
+                {preview.video.speaker} · {date(preview.video.published_at)}
+              </p>
+              <a href={preview.video.url} target="_blank" rel="noreferrer">
+                Open original video
+              </a>
+              {!preview.passages.length && (
                 <p>
-                  {preview.video.speaker} · {date(preview.video.published_at)}
+                  Captions are unavailable. Import a transcript to add evidence.
                 </p>
-                <a href={preview.video.url} target="_blank" rel="noreferrer">
-                  Open original video
-                </a>
-                {!preview.passages.length && (
-                  <p>
-                    Captions are unavailable. Import a transcript to add
-                    evidence.
+              )}
+              {preview.passages.map((p) => (
+                <article key={p.id}>
+                  <strong>
+                    {p.start_seconds == null
+                      ? "Timestamp not supplied"
+                      : `${p.start_seconds}s`}
+                  </strong>
+                  <p className="passage-text" dir="auto">
+                    {p.text}
                   </p>
-                )}
-                {preview.passages.map((p) => (
-                  <article key={p.id}>
-                    <strong>
-                      {p.start_seconds == null
-                        ? "Timestamp not supplied"
-                        : `${p.start_seconds}s`}
-                    </strong>
-                    <p className="passage-text" dir="auto">
-                      {p.text}
-                    </p>
-                  </article>
-                ))}
-              </>
-            )}
-            {evidencePreview && (
-              <>
-                <p>
-                  {evidencePreview.id} · {date(evidencePreview.date)}
-                </p>
-                <p>
-                  Timestamp:{" "}
-                  {evidencePreview.start_seconds == null
-                    ? "Not supplied"
-                    : `${evidencePreview.start_seconds}s`}
-                </p>
-                <a
-                  href={
-                    answer?.citations.find(
-                      (c) => c.evidenceId === evidencePreview.id,
-                    )?.url || evidencePreview.url
-                  }
-                  target="_blank"
-                  rel="noreferrer"
-                >
-                  Open original source
-                </a>
-                <pre className="evidence-text" dir="auto">
-                  {evidencePreview.text}
-                </pre>
-              </>
-            )}
-          </section>
-        </div>
+                </article>
+              ))}
+            </>
+          )}
+          {evidencePreview && (
+            <>
+              <p>
+                {evidencePreview.id} · {date(evidencePreview.date)}
+              </p>
+              <p>
+                Timestamp:{" "}
+                {evidencePreview.start_seconds == null
+                  ? "Not supplied"
+                  : `${evidencePreview.start_seconds}s`}
+              </p>
+              <a
+                href={
+                  answer?.citations.find(
+                    (c) => c.evidenceId === evidencePreview.id,
+                  )?.url || evidencePreview.url
+                }
+                target="_blank"
+                rel="noreferrer"
+              >
+                Open original source
+              </a>
+              <pre className="evidence-text" dir="auto">
+                {evidencePreview.text}
+              </pre>
+            </>
+          )}
+        </Modal>
       )}
       {source && (
-        <div className="modal-backdrop">
-          <section
-            className="modal"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="source-title"
+        <Modal
+          title={source.id ? "Edit research source" : "Add research source"}
+          close={() => setSource(null)}
+          closeLabel="Close source"
+          className="legacy-modal"
+        >
+          {error && (
+            <div className="alert danger" role="alert">
+              <ReadableError message={error} />
+            </div>
+          )}
+          <form
+            className="stack"
+            onSubmit={async (e) => {
+              e.preventDefault();
+              const f = new FormData(e.currentTarget);
+              const ok = await action("sources", {
+                ...(source.id ? { id: source.id } : {}),
+                name: f.get("name"),
+                url: f.get("url"),
+                channel_id: String(f.get("channel_id") || "") || null,
+                kind: f.get("kind"),
+                enabled: f.get("enabled") === "on",
+              });
+              if (ok) setSource(null);
+            }}
           >
-            <button
-              className="close"
-              aria-label="Close source editor"
-              onClick={() => setSource(null)}
-            >
-              ×
+            <label>
+              Source name
+              <input name="name" defaultValue={source.name} required />
+            </label>
+            <label>
+              Official source or channel page
+              <input name="url" type="url" defaultValue={source.url} required />
+            </label>
+            <label>
+              YouTube channel ID
+              <input
+                name="channel_id"
+                defaultValue={source.channel_id || ""}
+                placeholder="UC…"
+              />
+            </label>
+            <label>
+              Source role
+              <select name="kind" defaultValue={source.kind}>
+                <option value="expert">Expert commentary</option>
+                <option value="institutional">Institutional context</option>
+              </select>
+            </label>
+            <label className="check-label">
+              <input
+                name="enabled"
+                type="checkbox"
+                defaultChecked={!!source.enabled}
+              />{" "}
+              Automatically collect this channel’s captions
+            </label>
+            <button className="primary" disabled={pending}>
+              Save source
             </button>
-            <h2 id="source-title">Edit research source</h2>
-            <form
-              className="stack"
-              onSubmit={async (e) => {
-                e.preventDefault();
-                const f = new FormData(e.currentTarget);
-                const ok = await action("sources", {
-                  ...(source.id ? { id: source.id } : {}),
-                  name: f.get("name"),
-                  url: f.get("url"),
-                  channel_id: String(f.get("channel_id") || "") || null,
-                  kind: f.get("kind"),
-                  enabled: f.get("enabled") === "on",
-                });
-                if (ok) setSource(null);
-              }}
-            >
-              <label>
-                Source name
-                <input name="name" defaultValue={source.name} required />
-              </label>
-              <label>
-                Official source or channel page
-                <input
-                  name="url"
-                  type="url"
-                  defaultValue={source.url}
-                  required
-                />
-              </label>
-              <label>
-                YouTube channel ID
-                <input
-                  name="channel_id"
-                  defaultValue={source.channel_id || ""}
-                  placeholder="UC…"
-                />
-              </label>
-              <label>
-                Source role
-                <select name="kind" defaultValue={source.kind}>
-                  <option value="expert">Expert commentary</option>
-                  <option value="institutional">Institutional context</option>
-                </select>
-              </label>
-              <label className="check-label">
-                <input
-                  name="enabled"
-                  type="checkbox"
-                  defaultChecked={!!source.enabled}
-                />{" "}
-                Automatically collect this channel’s captions
-              </label>
-              <button className="primary" disabled={pending}>
-                Save source
-              </button>
-            </form>
-          </section>
-        </div>
+          </form>
+        </Modal>
       )}
     </div>
   );

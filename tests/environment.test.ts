@@ -7,6 +7,7 @@ import {
   rmSync,
   symlinkSync,
   readFileSync,
+  readdirSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -22,12 +23,16 @@ test("launcher loads .env then .env.local for both processes, preserving inherit
       "dir",
     );
     const fixture =
-      'console.log("ENV_CHECK:"+process.env.PSX_ENV_TEST);setTimeout(()=>{},1200);';
+      'const fs=require("node:fs");console.log("ENV_CHECK:"+process.env.PSX_ENV_TEST);fs.writeFileSync("ready-"+process.pid,"");const t=setInterval(()=>{if(fs.readdirSync(".").filter(x=>x.startsWith("ready-")).length===2){clearInterval(t);setTimeout(()=>{},200);}},50);';
     writeFileSync(join(root, "node_modules/next/dist/bin/next"), fixture);
     writeFileSync(join(root, "scripts/worker.ts"), fixture);
     writeFileSync(join(root, ".env"), "PSX_ENV_TEST=base\n");
     writeFileSync(join(root, ".env.local"), "PSX_ENV_TEST=local\n");
     for (const inherited of [undefined, "inherited"]) {
+      for (const name of readdirSync(root).filter((x) =>
+        x.startsWith("ready-"),
+      ))
+        rmSync(join(root, name));
       const env = { ...process.env };
       delete env.PSX_ENV_TEST;
       if (inherited) env.PSX_ENV_TEST = inherited;

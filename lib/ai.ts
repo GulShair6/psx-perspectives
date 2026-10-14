@@ -2,7 +2,6 @@ import OpenAI from "openai";
 import { today } from "./time";
 import { z } from "zod";
 import { db, companies } from "./db";
-import { reserve, settle, release } from "./budget";
 import { symbols } from "./validation";
 import type { Evidence, Citation } from "./types";
 export function aiSettings() {
@@ -11,8 +10,6 @@ export function aiSettings() {
     provider: ollama ? "Ollama Cloud" : "OpenAI",
     model: ollama ? "gemma4:31b" : "gpt-4.1-mini",
     configured: ollama || !!process.env.OPENAI_API_KEY,
-    inputRate: ollama ? 0.14 : 0.4,
-    outputRate: ollama ? 0.4 : 1.6,
   };
 }
 export async function askJson<T>(
@@ -33,16 +30,6 @@ export async function askJson<T>(
   const content = JSON.stringify(input);
   if (Buffer.byteLength(content) > 70_000)
     throw new Error("AI input exceeds the research context limit");
-  // Every UTF-8 byte is an upper bound on tokens; reserve prompt overhead and the full output allowance.
-  const reservation = reserve(
-    purpose,
-    Math.ceil(
-      (Buffer.byteLength(content + instruction + JSON.stringify(schema)) +
-        8000) *
-        settings.inputRate +
-        maxOutput * settings.outputRate,
-    ),
-  );
   try {
     const client = new OpenAI({
       apiKey: ollama ? process.env.OLLAMA_API_KEY : process.env.OPENAI_API_KEY,
@@ -76,17 +63,14 @@ export async function askJson<T>(
             },
           }),
     });
-    if (!response.usage)
-      throw new Error("Provider omitted usage; reservation retained");
-    settle(
-      reservation,
-      response.usage.prompt_tokens,
-      response.usage.completion_tokens,
-      settings.inputRate,
-      settings.outputRate,
-    );
     const raw = response.choices[0]?.message.content;
     if (!raw) throw new Error("AI returned no structured response");
+    if (
+      ["OLLAMA_API_KEY", "OPENAI_API_KEY", "YOUTUBE_DATA_API_KEY"].some(
+        (name) => process.env[name] && raw.includes(process.env[name]!),
+      )
+    )
+      throw new Error("Provider response contained credential data; discarded");
     if (response.choices[0]?.finish_reason === "length")
       throw new Error(
         "AI response was truncated; evidence is preserved. Retry with a smaller question or transcript.",
@@ -96,11 +80,16 @@ export async function askJson<T>(
       : raw;
     return validate(JSON.parse(json));
   } catch (e) {
-    if (
-      e instanceof OpenAI.APIError &&
-      [400, 401, 403, 404, 422, 429].includes(e.status || 0)
-    )
-      release(reservation);
+    if (e instanceof Error)
+      for (const name of [
+        "OLLAMA_API_KEY",
+        "OPENAI_API_KEY",
+        "YOUTUBE_DATA_API_KEY",
+      ]) {
+        const credential = process.env[name];
+        if (credential)
+          e.message = e.message.replaceAll(credential, "[credential redacted]");
+      }
     throw e;
   }
 }
