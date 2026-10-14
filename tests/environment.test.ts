@@ -52,11 +52,18 @@ test("launcher loads .env then .env.local for both processes, preserving inherit
     rmSync(root, { recursive: true, force: true });
   }
 });
-test("secret environment files are ignored and the example contains no credential", () => {
-  const r = spawnSync("git", ["check-ignore", ".env", ".env.local"], {
+test("private environment and SQLite files are ignored and the example contains no credential", () => {
+  const privateFiles = [
+    ".env",
+    ".env.local",
+    "research.sqlite",
+    "research.sqlite-wal",
+    "research.sqlite-shm",
+  ];
+  const r = spawnSync("git", ["check-ignore", ...privateFiles], {
     encoding: "utf8",
   });
   assert.equal(r.status, 0);
-  assert.deepEqual(r.stdout.trim().split("\n"), [".env", ".env.local"]);
+  assert.deepEqual(r.stdout.trim().split("\n"), privateFiles);
   assert.match(readFileSync(".env.example", "utf8"), /^OLLAMA_API_KEY=$/m);
 });
