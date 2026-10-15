@@ -146,7 +146,7 @@ export async function GET(
         sources: db.prepare("SELECT * FROM sources ORDER BY id").all(),
         jobs: db
           .prepare(
-            "SELECT id,type,status,progress,created_at,updated_at,error FROM jobs ORDER BY id DESC LIMIT 30",
+            "SELECT id,type,status,progress,created_at,updated_at,error FROM jobs ORDER BY (status='running') DESC,id DESC LIMIT 30",
           )
           .all(),
         gate: gate(),

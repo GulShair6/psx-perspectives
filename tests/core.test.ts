@@ -778,3 +778,28 @@ test("state endpoint excludes application budget and quota fields", async () => 
   assert.equal("budget" in state, false);
   assert.equal("quota" in state, false);
 });
+
+test("state endpoint retains running work behind a backlog of newer jobs", async () => {
+  const insert = db.prepare(
+    "INSERT INTO jobs(type,payload,status,created_at,updated_at) VALUES('visibility_fixture','{}',?,?,?)",
+  );
+  const running = Number(insert.run("running", now(), now()).lastInsertRowid);
+  for (let i = 0; i < 31; i++) insert.run("queued", now(), now());
+  try {
+    const { NextRequest } = await import("next/server");
+    const { GET } = await import("../app/api/[...path]/route");
+    const response = await GET(
+      new NextRequest("http://127.0.0.1:3000/api/state", {
+        headers: { host: "127.0.0.1:3000" },
+      }),
+      { params: Promise.resolve({ path: ["state"] }) },
+    );
+    assert.equal(response.status, 200);
+    const state = await response.json();
+    assert.equal(state.jobs.length, 30);
+    assert.ok(state.jobs.some((job: { id: number }) => job.id === running));
+    assert.equal(state.jobs[0].status, "running");
+  } finally {
+    db.prepare("DELETE FROM jobs WHERE type='visibility_fixture'").run();
+  }
+});

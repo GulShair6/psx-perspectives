@@ -80,7 +80,7 @@ The source is organized into `app/` (interface and API), `lib/` (collection, ret
 - AI output is labeled as automatic and needs human review. Independent real-corpus evaluation is still pending: the 20-question relevance checklist in `tests/expert-research-questions.json` (at least 18 must retrieve independently labeled required evidence, including chronological and cross-channel context, or correctly identify its absence), and at least 30 independently reviewed real passages/chunks with 90% stock/stance accuracy. Fixture success does not certify model quality. Verified company consensus remains gated by independent review.
 - Public source layouts, captions, provider availability, and quotas can change. Source failures remain visible. Missing company metrics are not synthesized; 1Y price returns exclude payouts. Dividend endpoints may be unavailable.
 - Shariah classification requires a dated human-reviewed official source. Classifications older than 180 days are excluded from the compliant filter; this convention is not a certification.
-- Seeded InvestKaar identity remains unresolved until a valid channel identity is supplied. Live channel-name search and complete uploads backfill need a YouTube key and have not been verified in the current workspace.
+- Seeded InvestKaar identity remains unresolved until a valid channel identity is supplied. Channel-name search and full uploads discovery require a YouTube key. Discovery completeness and transcript availability are reported separately.
 
 ## Tests
 
