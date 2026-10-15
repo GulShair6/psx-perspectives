@@ -75,7 +75,7 @@ export async function askJson<T>(
         "AI response was truncated; evidence is preserved. Retry with a smaller question or transcript.",
       );
     const json = ollama
-      ? raw.trim().replace(/^```(?:json)?\s*\n([\s\S]*?)\n```$/, "$1")
+      ? raw.trim().replace(/^```(?:json)?\s*\n([\s\S]*?)\n[ \t]*```$/, "$1")
       : raw;
     return validate(JSON.parse(json));
   } catch (e) {

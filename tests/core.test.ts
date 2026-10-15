@@ -602,6 +602,18 @@ test("Ollama Cloud validates evidence without an application cap or usage metada
     );
     raw = '```json\n{"ok":true}\n```';
     assert.deepEqual(await call(), { ok: true });
+    raw = '```json\n{\n  "ok": true\n }\n ```';
+    assert.deepEqual(await call(), { ok: true });
+    raw = '```json\r\n{"ok":true}\r\n\t```';
+    assert.deepEqual(await call(), { ok: true });
+    for (const invalid of [
+      '```json\n{"ok":true}\n ``` extra prose',
+      '```json\n{"ok":true}\n ```\n```json\n{"ok":false}\n```',
+      '```json\n{"ok":\n ```',
+    ]) {
+      raw = invalid;
+      await assert.rejects(call(), /JSON/);
+    }
     raw = "unstructured output";
     await assert.rejects(call(), /JSON/);
     raw = '{"ok":false}';
