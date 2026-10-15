@@ -25,7 +25,7 @@
   },
   {
     "language": "en",
-    "symbols": ["GL"],
+    "symbols": ["GAL"],
     "question": "What reasons and risks did the channels give when discussing Ghandhara Automobiles?",
     "check": "Match canonical aliases and quote both rationale and risks when available."
   },
