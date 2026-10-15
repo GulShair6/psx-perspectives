@@ -252,7 +252,7 @@ export default function Desk() {
             ?.text || "Original passage unavailable.",
         );
       })
-      .catch((e) => {
+      .catch(() => {
         if (!controller.signal.aborted)
           setReviewPassage(
             "Could not load the original passage. Close and reopen to retry.",

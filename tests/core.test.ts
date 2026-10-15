@@ -407,7 +407,7 @@ test("automatic channel collection saves captions without a key and skips saved 
   delete process.env.OPENAI_API_KEY;
   let captionRequests = 0;
   const published = new Date(Date.now() - 86400000).toISOString();
-  globalThis.fetch = async (input, init) => {
+  globalThis.fetch = async (input) => {
     const url = new URL(String(input));
     if (url.hostname === "scstrade.com")
       return new Response(
@@ -578,7 +578,6 @@ test("Ollama Cloud validates evidence without an application cap or usage metada
   };
   const call = () =>
     askJson(
-      "test cloud",
       "Respond as JSON",
       {},
       {

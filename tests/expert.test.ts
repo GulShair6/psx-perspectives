@@ -31,7 +31,6 @@ const {
   resumeInsights,
   pipeline,
   reviewStatement,
-  ANALYSIS_VERSION,
   expertResearch,
   scopeCoverage,
 } = await import("../lib/expert");
@@ -717,7 +716,6 @@ test("provider rejection messages cannot expose the server credential", async ()
     await assert.rejects(
       () =>
         askJson(
-          "credential test",
           "Return JSON",
           {},
           { type: "object" },
@@ -862,7 +860,6 @@ test("successful provider responses containing credentials are discarded before 
     await assert.rejects(
       () =>
         askJson(
-          "credential response",
           "Return JSON",
           {},
           { type: "object" },
