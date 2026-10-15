@@ -630,6 +630,16 @@ test("answer validation rejects unknown citations, unsupported numerical claims 
     gaps: [],
   };
   assert.ok(validateExpertAnswer(base, evidence));
+  assert.throws(
+    () => validateExpertAnswer({
+      ...base,
+      whatWasSaid: [
+        { text: "FFC target 200", evidenceIds: ["chunk:1"] },
+        { text: "FFC target 100.5 [chunk:987]", evidenceIds: ["chunk:1"] },
+      ],
+    }, evidence),
+    /unsupported numbers.*whatWasSaid\[0\]: 200.*whatWasSaid\[1\]: 100\.5, 987/,
+  );
   assert.throws(() =>
     validateExpertAnswer(
       {
