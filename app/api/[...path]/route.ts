@@ -35,6 +35,7 @@ import {
   scopeCoverage,
 } from "@/lib/expert";
 import { catalog } from "@/lib/knowledge";
+import { getTranslations, queueTranslation } from "@/lib/translations";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 function local(request: NextRequest, mutation = false) {
@@ -68,6 +69,13 @@ export async function GET(
   try {
     local(request);
     const path = (await params).path.join("/");
+    if (path === "translations") {
+      const query = request.nextUrl.searchParams;
+      return response(getTranslations({
+        videoId: query.get("videoId"), target: query.get("target"),
+        ...(query.has("segmentIds") ? { segmentIds: query.get("segmentIds")!.split(",").map(Number) } : {}),
+      }));
+    }
     if (path === "channels/search")
       return response({
         channels: await searchChannels(
@@ -174,9 +182,13 @@ export async function GET(
           .all(id),
         chunks: db
           .prepare(
-            "SELECT id,text,start_seconds,end_seconds FROM chunks WHERE video_id=? ORDER BY ordinal",
+            "SELECT c.id,c.text,c.start_seconds,c.end_seconds,(SELECT json_group_array(segment_id) FROM chunk_segments WHERE chunk_id=c.id) segment_ids FROM chunks c WHERE video_id=? ORDER BY ordinal",
           )
-          .all(id),
+          .all(id)
+          .map(row => {
+            const { segment_ids, ...c } = row as { id: number; text: string; start_seconds: number | null; end_seconds: number | null; segment_ids: string };
+            return { ...c, segmentIds: JSON.parse(segment_ids) as number[] };
+          }),
         passages: db
           .prepare(
             "SELECT id,start_seconds,text FROM passages WHERE video_id=? ORDER BY id",
@@ -246,6 +258,10 @@ export async function POST(
     local(request, true);
     const path = (await params).path.join("/");
     const input = await json(request);
+    if (path === "translations") {
+      const result = queueTranslation(input);
+      return response(result, result.job === null ? 200 : 202);
+    }
     if (path === "channels/follow") {
       const p = z
         .object({
