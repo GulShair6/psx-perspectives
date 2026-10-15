@@ -67,7 +67,7 @@ Company observations can be included in expert answers through the combined evid
 
 The Next.js/React interface talks to a localhost-only API. SQLite stores original caption segments, searchable chunks, company snapshots, review decisions, and resumable job checkpoints. A sequential worker discovers videos, retrieves available captions, indexes transcripts, and queues cloud analysis.
 
-Retrieval scopes SQLite full-text search and stock/topic relationships to your filters before ranking. It combines deterministic retrieval with optional cached bilingual planning and bounded cloud reranking. Selected evidence feeds a structured answer whose quotations, numbers, and citations are validated. Failed validation returns evidence and gaps instead of an unsupported conclusion.
+Retrieval scopes SQLite full-text search and stock/topic relationships to your filters before ranking. It combines deterministic retrieval with optional cached bilingual planning and bounded cloud reranking. Selected evidence feeds a structured answer whose quotations, numbers, and citations are validated. A rejected synthesis can receive one correction attempt using the same evidence and validation rules. If correction fails, the app returns evidence and gaps instead of an unsupported conclusion.
 
 This is lexical and structured retrieval, without embeddings, a vector database, or GraphRAG. The broader stock-symbol catalog is separate from the ten-company fundamentals dashboard.
 

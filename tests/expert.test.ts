@@ -894,7 +894,12 @@ test("extraction rejects over-limit arrays without checkpointing or losing sourc
 test("synthesis failure returns scoped saved evidence and coverage without a generated conclusion", async () => {
   const original = globalThis.fetch;
   process.env.OLLAMA_API_KEY = "fixture-synthesis-failure";
-  globalThis.fetch = async () => Response.json({error:{message:"provider unavailable"}}, {status:503});
+  let synthesisAttempts = 0;
+  globalThis.fetch = async (_input, init) => {
+    const instruction = JSON.parse(String(init?.body)).messages[0].content as string;
+    if (instruction.startsWith("Answer only")) synthesisAttempts++;
+    return Response.json({error:{message:"provider unavailable"}}, {status:503});
+  };
   try {
     const result = await expertResearch(expertChatSchema.parse({question:"FFC outlook",channelIds:[2],symbols:["FFC"],since:"2026-10-01",until:"2026-10-13"}));
     assert.ok(result.evidence.length);
@@ -903,7 +908,53 @@ test("synthesis failure returns scoped saved evidence and coverage without a gen
     assert.ok(result.coverage.indexed);
     assert.match(result.interpretation,/synthesis failed/);
     assert.match(result.retrieval.fallbackReason||"",/saved evidence/);
+    assert.equal(synthesisAttempts, 1);
   } finally { globalThis.fetch = original; delete process.env.OLLAMA_API_KEY; }
+});
+
+test("research corrects one rejected answer and still falls back after a second invalid answer", async () => {
+  fixture("repair00001", "FFC has a cautious outlook without a price target.");
+  const original = globalThis.fetch;
+  const paused = pipeline().analysis_paused;
+  process.env.OLLAMA_API_KEY = "fixture-answer-repair";
+  db.prepare("UPDATE pipeline_state SET analysis_paused=NULL WHERE id=1").run();
+  try {
+    for (const correct of [true, false]) {
+      let attempts = 0;
+      globalThis.fetch = async (_input, init) => {
+        const body = JSON.parse(String(init?.body));
+        const instruction = body.messages[0].content as string;
+        const input = JSON.parse(body.messages[1].content);
+        if (instruction.startsWith("Plan retrieval"))
+          return response({intent:"stock",symbols:["FFC"],phrases:[]});
+        if (instruction.startsWith("Rank supplied"))
+          return response({rankings:input.candidates.map((c: {id:number})=>({id:c.id,relevance:3}))});
+        attempts++;
+        if (attempts === 2) {
+          assert.match(input.previousRejectedAnswer.reason, /unsupported numbers/);
+          assert.match(input.previousRejectedAnswer.answer.whatWasSaid[0].text, /99999999/);
+        }
+        return response({
+          whatWasSaid:[{text:correct && attempts === 2 ? "The saved caption discusses FFC." : "FFC target is 99999999.",evidenceIds:[input.evidence[0].id]}],
+          changes:[],disagreements:[],interpretation:"Read the source context.",gaps:[],
+        });
+      };
+      const result = await expertResearch(expertChatSchema.parse({question:`FFC outlook correction ${correct}`,channelIds:[2],symbols:["FFC"],since:"2026-10-01",until:"2026-10-13"}));
+      assert.equal(attempts, 2);
+      assert.ok(result.evidence.length);
+      if (correct) {
+        assert.equal(result.whatWasSaid[0].text, "The saved caption discusses FFC.");
+        assert.ok(!result.retrieval.fallbackReason?.includes("synthesis failed"));
+      } else {
+        assert.equal(result.whatWasSaid.length, 0);
+        assert.match(result.interpretation, /synthesis failed/);
+      }
+    }
+  } finally {
+    globalThis.fetch = original;
+    delete process.env.OLLAMA_API_KEY;
+    db.prepare("UPDATE pipeline_state SET analysis_paused=? WHERE id=1").run(paused);
+  }
 });
 
 test.after(() => {
