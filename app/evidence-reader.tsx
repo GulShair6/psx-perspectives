@@ -11,6 +11,7 @@ import {
   type Preview,
 } from "./expert-shared";
 import { Modal } from "./research-ui";
+import TranscriptTranslation from "./transcript-translation";
 export default function EvidenceReader({
   evidence,
   close,
@@ -57,9 +58,14 @@ export default function EvidenceReader({
     };
   }, [wide, evidence]);
   const quote = evidenceText(evidence);
+  const mappedIds = new Set(context?.chunks.find(c => evidence.id === `chunk:${c.id}`)?.segmentIds || []);
+  if (!mappedIds.size && context && evidence.kind === "transcript") {
+    const chunk = context.chunks.find(c => c.text.includes(quote));
+    for (const id of chunk?.segmentIds || []) mappedIds.add(id);
+  }
   const index =
     context?.segments.findIndex((s) =>
-      evidence.start_seconds !== null
+      mappedIds.size ? mappedIds.has(s.id) : evidence.start_seconds !== null
         ? s.start_seconds !== null &&
           s.start_seconds <= evidence.start_seconds! &&
           (s.end_seconds === null || s.end_seconds >= evidence.start_seconds!)
@@ -67,7 +73,7 @@ export default function EvidenceReader({
     ) ?? -1;
   const segments =
     context && index >= 0
-      ? context.segments.slice(Math.max(0, index - 1), index + 3)
+      ? context.segments.filter((s, i) => mappedIds.has(s.id) || (i >= Math.max(0, index - 1) && i < index + 3))
       : [];
   const content = (
     <>
@@ -115,12 +121,7 @@ export default function EvidenceReader({
               shown above.
             </p>
           )}
-          {segments.map((s) => (
-            <div key={s.id}>
-              <small>{stamp(s.start_seconds)}</small>
-              <p dir="auto">{s.text}</p>
-            </div>
-          ))}
+          {context?.video.id === evidence.video_id && !!segments.length && <TranscriptTranslation video={context.video} segments={segments} />}
         </section>
       )}
     </>

@@ -49,6 +49,8 @@ test("validated translations are saved without changing source records or review
   globalThis.fetch=async(_url,init)=>{
     calls++;const body=JSON.parse(String(init?.body));assert.equal(body.max_tokens,8192);
     const p=JSON.parse(body.messages[1].content);
+    assert.equal(p.sourceLanguageHint,"hi");
+    assert.equal(p.sourceTitle,"Synthetic translation fixture");
     return response({translations:p.pieces.map((s:{id:string})=>({id:s.id,text:"FFC کو 100.5 پر نہ خریدیں۔ یہ فرضی مثال ہے۔"}))});
   };
   await run(queueTranslation(input("trans000003")).job!);
@@ -64,7 +66,7 @@ test("validated translations are saved without changing source records or review
 
 test("invalid mappings, omitted or altered numbers, malformed and truncated responses never enter the cache", async()=>{
   fixture("trans000004");process.env.OLLAMA_API_KEY="translation-fixture-key";
-  for(const bad of ["missing","duplicate","unknown","number","omitted","sign","malformed","truncated","credential"]){
+  for(const bad of ["missing","duplicate","unknown","number","omitted","sign","percentage","digit-script","repeated","malformed","truncated","credential"]){
     globalThis.fetch=async(_url,init)=>{
       const p=JSON.parse(JSON.parse(String(init?.body)).messages[1].content);
       let rows=p.pieces.map((s:{id:string;text:string})=>({id:s.id,text:s.text}));
@@ -74,6 +76,9 @@ test("invalid mappings, omitted or altered numbers, malformed and truncated resp
       if(bad==="number")rows[0].text="Buy at 999.";
       if(bad==="omitted")rows[0].text="Buy now.";
       if(bad==="sign")rows[0].text="Do not buy at -100.5.";
+      if(bad==="percentage")rows[0].text="Do not buy at 100.5%.";
+      if(bad==="digit-script")rows[0].text="Do not buy at ١٠٠.٥.";
+      if(bad==="repeated")rows[0].text="Do not buy at 100.5 or 100.5.";
       if(bad==="credential")rows[0].text="translation-fixture-key";
       return response(bad==="malformed" ? "{broken" : {translations:rows},bad==="truncated" ? "length" : "stop");
     };

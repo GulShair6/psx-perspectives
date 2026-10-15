@@ -6,8 +6,6 @@ import type { ExpertEvidence } from "@/lib/expert";
 import {
   api,
   date,
-  stamp,
-  link,
   type Data,
   type Match,
   type Statement,
@@ -15,12 +13,13 @@ import {
   type Answer,
   type Preview,
 } from "./expert-shared";
-import { Modal, StockPicker, PageControls, ReadableError } from "./research-ui";
+import { Modal, StockPicker, ReadableError } from "./research-ui";
 import ChannelRail from "./channel-rail";
 import ChannelProfile from "./channel-profile";
 import ResearchAnswer from "./research-answer";
 import EvidenceReader from "./evidence-reader";
 import { StatementReview } from "./expert-review";
+import TranscriptTranslation from "./transcript-translation";
 export default function ExpertDesk({
   workerOnline,
   jobs,
@@ -81,7 +80,6 @@ export default function ExpertDesk({
     } | null>(null);
   const [discover, setDiscover] = useState(false),
     [view, setView] = useState(initialChannel ? "channel" : "question"),
-    [previewPage, setPreviewPage] = useState(0),
     [urlReady, setUrlReady] = useState(false);
   useEffect(() => {
     const p = new URLSearchParams(location.search);
@@ -253,7 +251,6 @@ export default function ExpertDesk({
   async function openVideo(id: string) {
     setError("");
     try {
-      setPreviewPage(0);
       setPreview(await api<Preview>("video?id=" + encodeURIComponent(id)));
     } catch (e) {
       setError(e instanceof Error ? e.message : "Preview failed");
@@ -671,32 +668,7 @@ export default function ExpertDesk({
       {preview && (
         <Modal title={preview.video.title} close={() => setPreview(null)}>
           <p>{preview.video.language} · Original saved segments</p>
-          {preview.segments
-            .slice(previewPage * 25, (previewPage + 1) * 25)
-            .map((s) => (
-              <article className="statement" key={s.id}>
-                <p>
-                  {stamp(s.start_seconds)}
-                  {s.end_seconds !== null
-                    ? ` → ${stamp(s.end_seconds)}`
-                    : ""} · {s.provenance} · Retrieved {date(s.retrieved_at)}
-                </p>
-                <p dir="auto">{s.text}</p>
-                <a
-                  href={link(preview.video.url, s.start_seconds)}
-                  target="_blank"
-                  rel="noreferrer"
-                >
-                  Open this timestamp ↗
-                </a>
-              </article>
-            ))}
-          <PageControls
-            page={previewPage}
-            total={preview.segments.length}
-            onChange={setPreviewPage}
-            label="transcript segments"
-          />
+          <TranscriptTranslation video={preview.video} segments={preview.segments} full />
         </Modal>
       )}
     </div>

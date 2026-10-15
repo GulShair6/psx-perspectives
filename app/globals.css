@@ -8,6 +8,13 @@
   --green: #237b63;
   --red: #ac3c43;
 }
+.transcript-translation { min-width: 0; }
+.transcript-translation .expert-actions { flex-wrap: wrap; }
+.translation-segment { border-top: 1px solid var(--line); padding-block: 12px; }
+.translation-pair { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 18rem), 1fr)); gap: 16px; }
+.translation-pair > div { min-width: 0; }
+.translation-pair p { white-space: pre-wrap; overflow-wrap: anywhere; unicode-bidi: plaintext; }
+.translation-pair [lang="ur"] p { font-family: "Noto Nastaliq Urdu", "Noto Naskh Arabic", "FreeSerif", "Segoe UI", serif; font-size: 1.125rem; line-height: 2; }
 * {
   box-sizing: border-box;
 }

@@ -10,6 +10,7 @@ PSX Perspectives keeps expert commentary separate from company fundamentals. It 
 - Read channel timelines, cited summaries, and stock/topic statements. Correct or reject automatic statements against the original transcript.
 - Ask across selected channels, dates, and stocks. Open saved evidence beside the answer, with video timestamps when the source supplies them.
 - Import TXT, SRT, or VTT transcript text when captions are unavailable.
+- Translate saved transcripts and source passages into Urdu or English alongside the original, with reusable saved results.
 - Use Company research for a ten-company fundamentals dashboard, watchlists, four-company comparisons, and dated official PSX observations.
 - Edit bilingual stock aliases, inspect collection jobs, and export company research as CSV or Markdown.
 
@@ -62,6 +63,14 @@ Selected questions and evidence are sent to the configured cloud provider. Calls
 For manual imports, switch to **Company research → Transcripts**. Paste the transcript with its video URL, title, speaker, publication date, and language. Plain text receives video citations without fabricated timestamps.
 
 Company observations can be included in expert answers through the combined evidence setting. Company prices, historical channel targets, and opinions remain distinct. Company collection can be queued from the interface or with `npm run refresh`.
+
+### Read a translation
+
+Open a transcript, a transcript citation, or **Review / correct statement**, then choose **Translate to Urdu** or **Translate to English**. The full transcript viewer translates the entire saved transcript; citation and review panels translate only their displayed source passage and context. The original remains visible beside the translation, or above it on smaller screens. Original timestamps and video links are retained.
+
+Translation uses the existing Ollama Cloud key and ingestion worker. Requested saved caption text, the video title and the source-language hint are sent to the provider; there is no automatic bulk translation or audio transcription. Source-language labels are hints, so a mislabeled track can still be translated. Long transcripts run as background jobs and continue after closing the viewer. Progress and partial results appear in the panel. Reopening and choosing the language reuses saved results. **Retry translation** resumes missing segments after a failure; provider quota/authentication failures require restoring the connection and resuming cloud analysis first.
+
+Translations are labeled **AI translation — not human-reviewed**. Only structurally valid output with unchanged numerical notation is saved. Cached results remain readable without a provider key, and a changed transcript or translation version does not reuse stale results. The original source still drives search, answers, citations and review scores; translation alone does not count as an independent accuracy review. Confirm the original caption or audio before selecting the accuracy-reference checkbox. Caption mistakes, mistranslated names, units and meaning can survive these checks.
 
 ## How it works
 

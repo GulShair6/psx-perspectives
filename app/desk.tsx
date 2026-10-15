@@ -10,6 +10,8 @@ import {
 import { Modal, PageControls, ReadableError } from "./research-ui";
 import ResearchSettings from "./research-settings";
 import ExpertDesk from "./expert-desk";
+import TranscriptTranslation from "./transcript-translation";
+import type { Preview } from "./expert-shared";
 import { today } from "@/lib/time";
 import type { Company, Opinion, Table, Citation, Evidence } from "@/lib/types";
 type Source = {
@@ -176,8 +178,8 @@ export default function Desk() {
     [videoSearch, setVideoSearch] = useState("");
   const [videoFilter, setVideoFilter] = useState("all"),
     [sourceFilter, setSourceFilter] = useState("all");
-  const [preview, setPreview] = useState<{
-    video: Video;
+  const [preview, setPreview] = useState<Preview & {
+    video: Preview["video"] & Video;
     passages: { id: number; start_seconds: number | null; text: string }[];
   } | null>(null);
   const [evidencePreview, setEvidencePreview] = useState<Evidence | null>(null);
@@ -2034,23 +2036,12 @@ export default function Desk() {
               <a href={preview.video.url} target="_blank" rel="noreferrer">
                 Open original video
               </a>
-              {!preview.passages.length && (
+              {!preview.segments.length && (
                 <p>
                   Captions are unavailable. Import a transcript to add evidence.
                 </p>
               )}
-              {preview.passages.map((p) => (
-                <article key={p.id}>
-                  <strong>
-                    {p.start_seconds == null
-                      ? "Timestamp not supplied"
-                      : `${p.start_seconds}s`}
-                  </strong>
-                  <p className="passage-text" dir="auto">
-                    {p.text}
-                  </p>
-                </article>
-              ))}
+              <TranscriptTranslation video={preview.video} segments={preview.segments} full />
             </>
           )}
           {evidencePreview && (
