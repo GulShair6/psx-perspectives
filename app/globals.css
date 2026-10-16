@@ -1654,6 +1654,10 @@ summary {
   padding: 16px;
   min-width: 0;
 }
+.error-details pre {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
 .expert-modal {
   width: min(860px, calc(100vw - 40px));
   max-height: 90dvh;

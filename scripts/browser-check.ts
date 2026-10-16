@@ -382,7 +382,10 @@ try {
                 : "done",
           progress: "Synthetic translation progress",
           error: job.failed
-            ? "Translation fixture failed; saved original preserved"
+            ? method === "youtube"
+              ? "[YoutubeTranscript] YouTube is receiving too many requests from this IP and now requires solving a captcha to continue. " +
+                "long-fixture-token".repeat(30)
+              : "Translation fixture failed; saved original preserved"
             : null,
         }
       : null;
@@ -574,6 +577,31 @@ try {
     .getByRole("button", { name: "Translate to English", exact: true })
     .click();
   await expect(reviewDialog).toContainText("YouTube captions unavailable.");
+  await expect(reviewDialog).toContainText(
+    "YouTube is temporarily limiting caption requests",
+  );
+  await reviewDialog.getByText("Technical details", { exact: true }).click();
+  for (const width of [1440, 864, 320]) {
+    await page.setViewportSize({ width, height: 900 });
+    expect(
+      await reviewDialog.evaluate((el) => el.scrollWidth <= el.clientWidth),
+    ).toBe(true);
+    const pre = await reviewDialog.locator(".error-details pre").boundingBox();
+    const column = await reviewDialog.locator(".review-original").boundingBox();
+    expect(pre!.x + pre!.width).toBeLessThanOrEqual(
+      column!.x + column!.width + 1,
+    );
+  }
+  await page.screenshot({
+    path: "data/browser-artifacts/translation-error-mobile.png",
+    fullPage: false,
+  });
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.screenshot({
+    path: "data/browser-artifacts/translation-error-desktop.png",
+    fullPage: false,
+  });
+  await page.setViewportSize({ width: 1440, height: 1050 });
   expect(ollamaPosts).toBe(0);
   await expect(
     reviewDialog.getByRole("button", {

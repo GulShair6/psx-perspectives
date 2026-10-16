@@ -172,6 +172,9 @@ export function StockPicker({
   );
 }
 export function ReadableError({ message }: { message: string }) {
+  const youtubeLimited =
+    message.includes("[YoutubeTranscript]") &&
+    /too many requests|captcha|rate.?limit/i.test(message);
   const technical =
     message.trim().startsWith("[") ||
     message.includes('"path"') ||
@@ -179,10 +182,11 @@ export function ReadableError({ message }: { message: string }) {
   return technical ? (
     <>
       <p>
-        The source or analysis could not be processed. Your saved evidence is
-        retained.
+        {youtubeLimited
+          ? "YouTube is temporarily limiting caption requests from this connection. Try again later. Your saved evidence is unchanged."
+          : "The source or analysis could not be processed. Your saved evidence is retained."}
       </p>
-      <details>
+      <details className="error-details">
         <summary>Technical details</summary>
         <pre>{message}</pre>
       </details>
