@@ -125,7 +125,7 @@ export function localRequest(
     socket.setTimeout(timeout, fail);
     socket.on("error", fail);
     socket.on("connect", () =>
-      socket.end(
+      socket.write(
         JSON.stringify({
           ...(payload as object),
           deadline: Date.now() + timeout,
