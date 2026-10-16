@@ -51,7 +51,8 @@ test("validated translations are saved without changing source records or review
     const p=JSON.parse(body.messages[1].content);
     assert.equal(p.sourceLanguageHint,"hi");
     assert.equal(p.sourceTitle,"Synthetic translation fixture");
-    return response({translations:p.pieces.map((s:{id:string})=>({id:s.id,text:"FFC کو 100.5 پر نہ خریدیں۔ یہ فرضی مثال ہے۔"}))});
+    assert.ok(!p.pieces[0].text.includes("100.5"));
+    return response({translations:p.pieces.map((s:{id:string;text:string})=>({id:s.id,text:s.text.replace("Do not buy FFC at ","FFC کو ").replace(". This is hypothetical."," پر نہ خریدیں۔ یہ فرضی مثال ہے۔")}))});
   };
   await run(queueTranslation(input("trans000003")).job!);
   assert.equal(calls,1);
@@ -87,6 +88,44 @@ test("invalid mappings, omitted or altered numbers, malformed and truncated resp
     });
     assert.equal(getTranslations(input("trans000004")).translations.length,0,bad);
   }
+});
+
+test("protected numbers restore exact notation and reject missing, duplicated, cross-piece or extra numbers",async()=>{
+  const text="Do not invest ₹00 for 10 years. Preserve +1.50%, −٢,٣٤٥.٦٧٪ and १०.\n\nDo not buy at -12.50%.";
+  fixture("trans000009",text);process.env.OLLAMA_API_KEY="translation-fixture-key";
+  for(const bad of ["missing","duplicate","cross-piece","extra"]){
+    globalThis.fetch=async(_url,init)=>{
+      const p=JSON.parse(JSON.parse(String(init?.body)).messages[1].content);
+      const rows=p.pieces.map((s:{id:string;text:string})=>({...s}));
+      const marker=rows[0].text.match(/~[a-f\d]{6}:[a-z\d]+~/)![0];
+      if(bad==="missing")rows[0].text=rows[0].text.replace(marker,"");
+      if(bad==="duplicate")rows[0].text+=marker;
+      if(bad==="cross-piece")[rows[0].text,rows[1].text]=[rows[1].text,rows[0].text];
+      if(bad==="extra")rows[0].text+=" 999";
+      return response({translations:rows});
+    };
+    await assert.rejects(run(queueTranslation(input("trans000009")).job!),/num(?:ber|erical).*segment/i);
+    assert.equal(getTranslations(input("trans000009")).translations.length,0);
+  }
+  globalThis.fetch=async(_url,init)=>{
+    const p=JSON.parse(JSON.parse(String(init?.body)).messages[1].content);
+    return response({translations:p.pieces});
+  };
+  await run(queueTranslation(input("trans000009")).job!);
+  assert.equal(getTranslations(input("trans000009")).translations.map(s=>s.text).join("\n\n"),text);
+});
+
+test("dense numeric input stays within the provider context and restores every number",async()=>{
+  const ids=fixture("trans000010"),text="1 ".repeat(4095)+"1";
+  db.prepare("UPDATE caption_segments SET text=? WHERE id=?").run(text,ids[0]);
+  process.env.OLLAMA_API_KEY="translation-fixture-key";
+  globalThis.fetch=async(_url,init)=>{
+    const content=JSON.parse(String(init?.body)).messages[1].content;
+    assert.ok(Buffer.byteLength(content)<70000);
+    return response({translations:JSON.parse(content).pieces});
+  };
+  await run(queueTranslation(input("trans000010")).job!);
+  assert.equal(getTranslations(input("trans000010")).translations[0].text,text);
 });
 
 test("partial progress survives failure and an overlapping retry only translates missing segments",async()=>{
