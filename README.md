@@ -84,6 +84,8 @@ Local output is **provisional** until separately compared with audio. Urdu becom
 
 Use Python 3.11 and at least **8 GiB free disk** for setup headroom. The three official [IndicTrans2 distilled models](https://github.com/AI4Bharat/IndicTrans2) require you to accept their Hugging Face access conditions yourself. Configure `HF_TOKEN` locally for the download; never paste it in chat or commit it. Model revisions and direct runtime dependencies are pinned under `local_translation/`; the Python environment and weights stay in ignored `data/local-translation/`.
 
+The optional model stack remains experimental. Its remaining PyTorch and Transformers advisories require review before release; the npm dependency audit does not cover them. See [local-runtime security status](docs/local-runtime-security.md). After a Python dependency update, rerun setup and the model quality/capacity trials before treating that environment as validated.
+
 ```sh
 python3.11 local_translation/setup.py
 npm start
@@ -176,7 +178,7 @@ To restore, stop the website and worker, copy the backup to a clean database loc
 
 ## Contributing and licensing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup, checks, and review expectations. Pull requests run formatting, strict TypeScript checks, isolated tests, a production build, dependency auditing, and browser/accessibility checks without provider credentials. Weekly Dependabot updates cover npm dependencies and GitHub Actions.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup, checks, and review expectations. Pull requests run formatting, strict TypeScript checks, isolated Node/Python tests, a production build, npm dependency auditing, and browser/accessibility checks without provider credentials. Weekly Dependabot updates cover npm dependencies, optional Python requirements and GitHub Actions.
 
 Maintainers can follow [RELEASING.md](RELEASING.md) for verification, backups, GitHub protections, and publication steps.
 
