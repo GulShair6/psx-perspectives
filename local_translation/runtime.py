@@ -1,5 +1,7 @@
 """CPU-only, offline IndicTrans2 service. No transcript text leaves this process."""
 import gc
+import hashlib
+from importlib.metadata import version as package_version, PackageNotFoundError
 import json
 import os
 from pathlib import Path
@@ -15,9 +17,24 @@ import signal
 ROOT = Path(__file__).resolve().parents[1]
 DATA = Path(os.environ.get('PSX_LOCAL_TRANSLATION_DIR', ROOT / 'data/local-translation'))
 MODELS = json.loads((ROOT / 'local_translation/models.json').read_text())
+PINNED_REQUIREMENTS = (ROOT / 'local_translation/requirements.txt').read_bytes().decode('utf8')
+REVISION = hashlib.sha256(json.dumps({'models': MODELS, 'requirements': PINNED_REQUIREMENTS}, ensure_ascii=False, separators=(',', ':')).encode('utf8')).hexdigest()
 VERSION = 'local-2'
 class TranslationError(ValueError):
     pass
+
+
+def check_dependencies():
+    for line in PINNED_REQUIREMENTS.splitlines():
+        if not line.strip() or line.startswith(('#', '--')):
+            continue
+        name, expected = line.split('==')
+        try:
+            if package_version(name) == expected:
+                continue
+        except PackageNotFoundError:
+            pass
+        raise TranslationError('Local dependencies differ from the pinned setup. Rerun local_translation/setup.py.')
 
 
 NUMBERS = re.compile(r'[+\-−]?\d+(?:[.,]\d+)*(?:[%٪])?')
@@ -53,6 +70,7 @@ class Translator:
         def blocked(*args, **kwargs):
             raise OSError('External networking disabled in local translation runtime')
         socket.socket.connect = blocked
+        check_dependencies()
         import torch
         torch.set_num_threads(2)
         torch.set_num_interop_threads(1)
@@ -145,7 +163,7 @@ class Handler(socketserver.StreamRequestHandler):
 
 def publish_readiness(owner):
     temporary = DATA / ('runtime-' + owner + '.tmp')
-    temporary.write_text(json.dumps({'pid': os.getpid(), 'owner': owner, 'version': VERSION, 'heartbeat': time.time() * 1000}))
+    temporary.write_text(json.dumps({'pid': os.getpid(), 'owner': owner, 'version': VERSION, 'revision': REVISION, 'heartbeat': time.time() * 1000}))
     os.chmod(temporary, 0o600)
     temporary.replace(DATA / 'runtime.json')
 

@@ -84,7 +84,7 @@ Local output is **provisional** until separately compared with audio. Urdu becom
 
 Use Python 3.11 and at least **8 GiB free disk** for setup headroom. The three official [IndicTrans2 distilled models](https://github.com/AI4Bharat/IndicTrans2) require you to accept their Hugging Face access conditions yourself. Configure `HF_TOKEN` locally for the download; never paste it in chat or commit it. Model revisions and direct runtime dependencies are pinned under `local_translation/`; the Python environment and weights stay in ignored `data/local-translation/`.
 
-The optional model stack remains experimental. Its remaining PyTorch and Transformers advisories require review before release; the npm dependency audit does not cover them. See [local-runtime security status](docs/local-runtime-security.md). After a Python dependency update, rerun setup and the model quality/capacity trials before treating that environment as validated.
+The optional model stack remains experimental. Its remaining PyTorch and Transformers advisories require review before release; the npm dependency audit does not cover them. See [local-runtime security status](docs/local-runtime-security.md). Runtime startup checks the installed direct dependencies against their pins. Translation caches and quality/capacity reports are tied to the pinned models, declared dependency versions and processing version; changing a pin requires setup and fresh validation. Older translations remain stored but cannot satisfy current requests or retrieval.
 
 ```sh
 python3.11 local_translation/setup.py

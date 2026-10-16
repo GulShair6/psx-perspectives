@@ -10,6 +10,8 @@ SentencePiece 0.2.0 is affected by [GHSA-38vq-g6vr-w8wf](https://github.com/advi
 
 PyTorch 2.6.0+cpu and Transformers 4.51.3 still match upstream advisory records. The release review must cover their complete resolved dependency graph, not just direct pins. Do not suppress those findings merely because inference is optional.
 
+A metadata-only resolution on 2026-10-16 selected 57 packages for Python 3.11 on x86_64 Linux (manylinux 2.28), using the declared CPU index and pins. The [OSV package/version API](https://google.github.io/osv.dev/post-v1-querybatch/) returned advisory matches for PyTorch and Transformers, with no matches for the other 55 selected versions. PyTorch was queried both as `2.6.0+cpu` and as upstream `2.6.0` because version matching can differ. Duplicate advisory aliases are not separate vulnerabilities. This is a dated dependency snapshot, not a committed lock, installed-environment audit or proof of safety. No packages or weights were installed by that resolution; compatibility and advisory reachability remain unresolved.
+
 Relevant high-severity Transformers reports include:
 
 - [GHSA-29pf-2h5f-8g72](https://github.com/advisories/GHSA-29pf-2h5f-8g72): attacker-controlled attention configuration during model loading; fixed in 5.3.0. The wrapper uses pinned local files and explicitly selects eager attention, but that constraint does not replace a compatible patched stack.
@@ -18,6 +20,8 @@ Relevant high-severity Transformers reports include:
 - [GHSA-xrqw-3rrv-vx5w](https://github.com/advisories/GHSA-xrqw-3rrv-vx5w): writes through chat-template names in `save_pretrained`; fixed in 5.10.0. The runtime does not call `save_pretrained`.
 
 These observations describe the wrapper's current calls. They do not establish that every transitive or pinned-model-code path is unreachable. Older PyTorch reports also require triage. A major Transformers update must be tested with all three exact model revisions; changing a version number and passing model-free tests is insufficient.
+
+The runtime refuses to start when an installed direct dependency differs from its declared pin. Readiness, current translation caches and quality/capacity reports include the model revisions, declared dependency pins and processing version. An already running process cannot claim a subsequently changed setup. This identifies the declared direct dependencies, not a lock or security audit of the full transitive environment.
 
 ## Evidence required to close this review
 

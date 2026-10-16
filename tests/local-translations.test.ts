@@ -7,6 +7,7 @@ import { createServer } from "node:net";
 const temp = mkdtempSync(join(tmpdir(), "psx-local-"));
 process.env.PSX_DB_PATH = join(temp, "research.sqlite");
 process.env.PSX_LOCAL_TRANSLATION_DIR = temp;
+const { LOCAL_REVISION } = await import("../lib/local-runtime");
 delete process.env.OLLAMA_API_KEY;
 writeFileSync(
   join(temp, "installed.json"),
@@ -23,6 +24,7 @@ const ready = () =>
       pid: process.pid,
       owner: "fixture",
       version: "local-2",
+      revision: LOCAL_REVISION,
       heartbeat: Date.now(),
     }),
   );

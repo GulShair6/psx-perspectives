@@ -8,7 +8,15 @@ import models from "../local_translation/models.json";
 
 export const LOCAL_VERSION = "local-2";
 export const LOCAL_REVISION = createHash("sha256")
-  .update(JSON.stringify(models))
+  .update(
+    JSON.stringify({
+      models,
+      requirements: readFileSync(
+        join(process.cwd(), "local_translation/requirements.txt"),
+        "utf8",
+      ),
+    }),
+  )
   .digest("hex");
 export const localDirectory =
   process.env.PSX_LOCAL_TRANSLATION_DIR ||
@@ -38,6 +46,7 @@ export function localReadiness() {
       state.pid <= 0 ||
       !state.owner ||
       state.version !== LOCAL_VERSION ||
+      state.revision !== LOCAL_REVISION ||
       !Number.isFinite(state.heartbeat) ||
       Date.now() - state.heartbeat > 30_000 ||
       state.heartbeat > Date.now() + 5_000 ||
@@ -187,6 +196,8 @@ export async function inferLocal(
   blocks: LocalBlock[],
   timeout?: number,
 ) {
+  const readiness = localReadiness();
+  if (!readiness.ready) throw new Error(readiness.reason!);
   const raw = (await localRequest({ source, target, blocks }, timeout)) as {
     blocks?: unknown;
   };

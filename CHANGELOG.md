@@ -18,6 +18,7 @@
 - Worker restart recovery, stale runtime readiness and answer-cache invalidation caused by unrelated Urdu preparation.
 - Cross-site GET requests reaching provider-backed endpoints; removed unused cloud planning/reranking paths.
 - Python environment creation through symlinked interpreters. Updated SentencePiece to 0.2.1 for its published heap-overflow fix.
+- Local runtime readiness and translation validation now follow declared dependency pins as well as model revisions; mismatched installed direct dependencies require setup again.
 
 ### Remaining validation
 

@@ -40,7 +40,7 @@ The repository owner should enable these settings before accepting contributions
 
 GitHub can restrict branch protections on private repositories by account plan. If the API reports that limitation, record it rather than claiming protections are enabled. After an owner-approved switch to public visibility, configure and verify the required checks and review rules before accepting contributions; a paid plan is not a prerequisite for this local project.
 
-The workflow uses a read-only token, pinned action commits, no provider credentials, and no deployment step. Pull requests from forks run without repository secrets. Dependabot proposes npm and action updates; review and test them before merging.
+The workflow uses a read-only token, pinned action commits, no provider credentials, and no deployment step. Pull requests from forks run without repository secrets. Dependabot proposes npm, Python and action updates; review and test them before merging.
 
 ## Publish deliberately
 
