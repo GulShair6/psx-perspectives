@@ -5,9 +5,13 @@ from pathlib import Path
 import shutil
 import subprocess
 import sys
-import venv
 ROOT = Path(__file__).resolve().parents[1]
 DATA = ROOT / 'data/local-translation'
+
+
+def create_environment(directory):
+    # Resolve shims so pyvenv.cfg points to the interpreter's actual standard library.
+    subprocess.run([str(Path(sys.executable).resolve()), '-m', 'venv', str(directory)], check=True)
 
 
 def main():
@@ -17,8 +21,7 @@ def main():
         raise SystemExit('Local setup needs at least 8 GiB free disk for CPU packages, weights and setup headroom. No files were removed.')
     DATA.mkdir(parents=True, exist_ok=True)
     python = DATA / 'venv/bin/python'
-    if not python.exists():
-        venv.create(DATA / 'venv', with_pip=True)
+    create_environment(DATA / 'venv')
     subprocess.run([str(python), '-m', 'pip', 'install', '--no-cache-dir', '-r', str(ROOT / 'local_translation/requirements.txt')], check=True)
     script = '''import json,os
 from pathlib import Path
