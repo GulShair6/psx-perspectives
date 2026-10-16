@@ -47,9 +47,7 @@ export default function ExpertDesk({
     [matches, setMatches] = useState<Match[]>([]),
     [selected, setSelected] = useState<number[]>([]),
     [profile, setProfile] = useState<number | null>(initialChannel || null);
-  const [since, setSince] = useState(
-      sixMonthsAgo(),
-    ),
+  const [since, setSince] = useState(sixMonthsAgo()),
     [until, setUntil] = useState(today()),
     [symbol, setSymbol] = useState(""),
     [topic, setTopic] = useState(""),
@@ -668,7 +666,11 @@ export default function ExpertDesk({
       {preview && (
         <Modal title={preview.video.title} close={() => setPreview(null)}>
           <p>{preview.video.language} · Original saved segments</p>
-          <TranscriptTranslation video={preview.video} segments={preview.segments} full />
+          <TranscriptTranslation
+            video={preview.video}
+            segments={preview.segments}
+            full
+          />
         </Modal>
       )}
     </div>

@@ -9,16 +9,25 @@ export type SourceSegment = {
   end_seconds: number | null;
 };
 export function sourceSegments(chunkId: number): SourceSegment[] {
-  return db.prepare("SELECT s.id,s.ordinal,s.text,s.start_seconds,s.end_seconds FROM chunk_segments cs JOIN caption_segments s ON s.id=cs.segment_id JOIN chunks c ON c.id=cs.chunk_id WHERE cs.chunk_id=? AND s.video_id=c.video_id ORDER BY s.ordinal").all(chunkId) as SourceSegment[];
+  return db
+    .prepare(
+      "SELECT s.id,s.ordinal,s.text,s.start_seconds,s.end_seconds FROM chunk_segments cs JOIN caption_segments s ON s.id=cs.segment_id JOIN chunks c ON c.id=cs.chunk_id WHERE cs.chunk_id=? AND s.video_id=c.video_id ORDER BY s.ordinal",
+    )
+    .all(chunkId) as SourceSegment[];
 }
-export function reconstructQuote(raw: unknown, chunks: {
-  id: number;
-}[]) {
-  const selection = z.object({
-    chunk_id: z.number().int(),
-    start_segment_id: z.number().int(),
-    end_segment_id: z.number().int(),
-  }).parse(raw);
+export function reconstructQuote(
+  raw: unknown,
+  chunks: {
+    id: number;
+  }[],
+) {
+  const selection = z
+    .object({
+      chunk_id: z.number().int(),
+      start_segment_id: z.number().int(),
+      end_segment_id: z.number().int(),
+    })
+    .parse(raw);
   if (!chunks.some((c) => c.id === selection.chunk_id))
     throw new Error("Selected chunk is outside the supplied batch");
   const segments = sourceSegments(selection.chunk_id);

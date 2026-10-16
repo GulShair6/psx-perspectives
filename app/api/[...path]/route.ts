@@ -71,10 +71,15 @@ export async function GET(
     const path = (await params).path.join("/");
     if (path === "translations") {
       const query = request.nextUrl.searchParams;
-      return response(getTranslations({
-        videoId: query.get("videoId"), target: query.get("target"),
-        ...(query.has("segmentIds") ? { segmentIds: query.get("segmentIds")!.split(",").map(Number) } : {}),
-      }));
+      return response(
+        getTranslations({
+          videoId: query.get("videoId"),
+          target: query.get("target"),
+          ...(query.has("segmentIds")
+            ? { segmentIds: query.get("segmentIds")!.split(",").map(Number) }
+            : {}),
+        }),
+      );
     }
     if (path === "channels/search")
       return response({
@@ -185,8 +190,14 @@ export async function GET(
             "SELECT c.id,c.text,c.start_seconds,c.end_seconds,(SELECT json_group_array(segment_id) FROM chunk_segments WHERE chunk_id=c.id) segment_ids FROM chunks c WHERE video_id=? ORDER BY ordinal",
           )
           .all(id)
-          .map(row => {
-            const { segment_ids, ...c } = row as { id: number; text: string; start_seconds: number | null; end_seconds: number | null; segment_ids: string };
+          .map((row) => {
+            const { segment_ids, ...c } = row as {
+              id: number;
+              text: string;
+              start_seconds: number | null;
+              end_seconds: number | null;
+              segment_ids: string;
+            };
             return { ...c, segmentIds: JSON.parse(segment_ids) as number[] };
           }),
         passages: db

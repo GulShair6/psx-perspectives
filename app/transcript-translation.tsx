@@ -4,48 +4,84 @@ import type { TranslationState } from "@/lib/translations";
 import { api, date, link, stamp, type Preview } from "./expert-shared";
 import { PageControls, ReadableError } from "./research-ui";
 
-export default function TranscriptTranslation({ video, segments, full = false }: {
+export default function TranscriptTranslation({
+  video,
+  segments,
+  full = false,
+}: {
   video: Preview["video"];
   segments: Preview["segments"];
   full?: boolean;
 }) {
-  const ids = segments.map(s => s.id).join(",");
+  const ids = segments.map((s) => s.id).join(",");
   const scope = `${video.id}:${video.content_hash}:${full ? "all" : ids}`;
   const [target, setTarget] = useState<"ur" | "en" | null>(null);
-  const [result, setResult] = useState<{ scope: string; value: TranslationState } | null>(null);
-  const [busy, setBusy] = useState(false), [error, setError] = useState("");
+  const [result, setResult] = useState<{
+    scope: string;
+    value: TranslationState;
+  } | null>(null);
+  const [busy, setBusy] = useState(false),
+    [error, setError] = useState("");
   const [page, setPage] = useState(0);
   const serial = useRef(0);
-  const data = result?.scope === scope && result.value.target === target ? result.value : null;
-  const pending = !!data?.job && ["queued", "running"].includes(data.job.status) && !data.complete;
+  const data =
+    result?.scope === scope && result.value.target === target
+      ? result.value
+      : null;
+  const pending =
+    !!data?.job &&
+    ["queued", "running"].includes(data.job.status) &&
+    !data.complete;
   const query = `translations?videoId=${encodeURIComponent(video.id)}&target=${target || "ur"}${full ? "" : `&segmentIds=${encodeURIComponent(ids)}`}`;
   useEffect(() => {
     serial.current++;
-    setTarget(null); setResult(null); setError(""); setBusy(false); setPage(0);
-    return () => { serial.current++; };
+    setTarget(null);
+    setResult(null);
+    setError("");
+    setBusy(false);
+    setPage(0);
+    return () => {
+      serial.current++;
+    };
   }, [scope]);
 
-  const accept = useCallback((value: TranslationState, request: number) => {
-    if (value.transcriptHash !== video.content_hash)
-      throw new Error("The saved transcript changed. Close and reopen this panel to translate it.");
-    if (serial.current === request) setResult({ scope, value });
-  }, [scope, video.content_hash]);
+  const accept = useCallback(
+    (value: TranslationState, request: number) => {
+      if (value.transcriptHash !== video.content_hash)
+        throw new Error(
+          "The saved transcript changed. Close and reopen this panel to translate it.",
+        );
+      if (serial.current === request) setResult({ scope, value });
+    },
+    [scope, video.content_hash],
+  );
   async function translate(language: "ur" | "en") {
     const request = ++serial.current;
     const current = () => serial.current === request;
-    setTarget(language); setBusy(true); setError("");
+    setTarget(language);
+    setBusy(true);
+    setError("");
     const path = `translations?videoId=${encodeURIComponent(video.id)}&target=${language}${full ? "" : `&segmentIds=${encodeURIComponent(ids)}`}`;
     try {
       let state = await api<TranslationState>(path);
       accept(state, request);
-      if (!state.complete && !["queued", "running"].includes(state.job?.status || "") && state.available) {
-        await api("translations", { videoId: video.id, target: language, ...(full ? {} : { segmentIds: segments.map(s => s.id) }) });
+      if (
+        !state.complete &&
+        !["queued", "running"].includes(state.job?.status || "") &&
+        state.available
+      ) {
+        await api("translations", {
+          videoId: video.id,
+          target: language,
+          ...(full ? {} : { segmentIds: segments.map((s) => s.id) }),
+        });
         if (!current()) return;
         state = await api<TranslationState>(path);
         if (current()) accept(state, request);
       }
     } catch (e) {
-      if (current()) setError(e instanceof Error ? e.message : "Translation request failed");
+      if (current())
+        setError(e instanceof Error ? e.message : "Translation request failed");
     } finally {
       if (current()) setBusy(false);
     }
@@ -53,56 +89,152 @@ export default function TranscriptTranslation({ video, segments, full = false }:
   useEffect(() => {
     if (!pending || busy) return;
     const request = serial.current;
-    let canceled = false, loading = false;
+    let canceled = false,
+      loading = false;
     const timer = setInterval(async () => {
       if (loading) return;
       loading = true;
       try {
         const state = await api<TranslationState>(query);
-        if (!canceled && serial.current === request) { accept(state, request); setError(""); }
+        if (!canceled && serial.current === request) {
+          accept(state, request);
+          setError("");
+        }
       } catch (e) {
-        if (!canceled && serial.current === request) setError(e instanceof Error ? e.message : "Could not refresh translation progress");
-      } finally { loading = false; }
+        if (!canceled && serial.current === request)
+          setError(
+            e instanceof Error
+              ? e.message
+              : "Could not refresh translation progress",
+          );
+      } finally {
+        loading = false;
+      }
     }, 2000);
-    return () => { canceled = true; clearInterval(timer); };
+    return () => {
+      canceled = true;
+      clearInterval(timer);
+    };
   }, [pending, query, accept, busy]);
 
-  const cached = new Map(data?.translations.map(row => [row.segmentId, row]) || []);
-  const groups = full ? segments.slice(page * 25, (page + 1) * 25).map(s => [s]) : [segments];
+  const cached = new Map(
+    data?.translations.map((row) => [row.segmentId, row]) || [],
+  );
+  const groups = full
+    ? segments.slice(page * 25, (page + 1) * 25).map((s) => [s])
+    : [segments];
   const count = data?.translations.length || 0;
   return (
-    <section className="transcript-translation" aria-label="Transcript translation">
-      <div className="expert-actions" role="group" aria-label="Translation language">
-        <button type="button" disabled={busy || !segments.length} aria-pressed={target === "ur"} onClick={() => void translate("ur")}>Translate to Urdu</button>
-        <button type="button" disabled={busy || !segments.length} aria-pressed={target === "en"} onClick={() => void translate("en")}>Translate to English</button>
+    <section
+      className="transcript-translation"
+      aria-label="Transcript translation"
+    >
+      <div
+        className="expert-actions"
+        role="group"
+        aria-label="Translation language"
+      >
+        <button
+          type="button"
+          disabled={busy || !segments.length}
+          aria-pressed={target === "ur"}
+          onClick={() => void translate("ur")}
+        >
+          Translate to Urdu
+        </button>
+        <button
+          type="button"
+          disabled={busy || !segments.length}
+          aria-pressed={target === "en"}
+          onClick={() => void translate("en")}
+        >
+          Translate to English
+        </button>
       </div>
       {target && (
         <>
           <p className="source-meta">AI translation — not human-reviewed</p>
           <p role="status">
-            {busy ? "Loading saved translation…" : data?.complete ? `Translation completed · ${count}/${data.total} segments` :
-              `${count ? `Partially translated · ${count}/${data?.total} segments. ` : ""}${data?.job?.status === "running" ? "Translating…" : data?.job?.status === "queued" ? "Queued for translation." : data?.job?.status === "failed" ? "Translation failed." : "Translation incomplete."}`}
+            {busy
+              ? "Loading saved translation…"
+              : data?.complete
+                ? `Translation completed · ${count}/${data.total} segments`
+                : `${count ? `Partially translated · ${count}/${data?.total} segments. ` : ""}${data?.job?.status === "running" ? "Translating…" : data?.job?.status === "queued" ? "Queued for translation." : data?.job?.status === "failed" ? "Translation failed." : "Translation incomplete."}`}
           </p>
-          {data && !data.complete && !data.workerOnline && <p role="status">The ingestion worker is offline. Start the app and worker to continue queued translations.</p>}
-          {data && !data.complete && data.unavailableReason && <p role="status">{data.unavailableReason}</p>}
-          {(error || (!data?.complete && data?.job?.error)) && <div role="alert"><ReadableError message={error || data?.job?.error || "Translation failed"} /></div>}
-          {!busy && (error || (data && !data.complete && !pending)) && <button type="button" onClick={() => void translate(target)}>Retry translation</button>}
+          {data && !data.complete && !data.workerOnline && (
+            <p role="status">
+              The ingestion worker is offline. Start the app and worker to
+              continue queued translations.
+            </p>
+          )}
+          {data && !data.complete && data.unavailableReason && (
+            <p role="status">{data.unavailableReason}</p>
+          )}
+          {(error || (!data?.complete && data?.job?.error)) && (
+            <div role="alert">
+              <ReadableError
+                message={error || data?.job?.error || "Translation failed"}
+              />
+            </div>
+          )}
+          {!busy && (error || (data && !data.complete && !pending)) && (
+            <button type="button" onClick={() => void translate(target)}>
+              Retry translation
+            </button>
+          )}
         </>
       )}
-      {groups.filter(group => group.length).map(group => (
-        <article className="translation-segment" key={group[0].id}>
-          <p className="source-meta">{stamp(group[0].start_seconds)}{group.at(-1)!.end_seconds !== null ? ` → ${stamp(group.at(-1)!.end_seconds)}` : ""} · {group[0].provenance} · Retrieved {date(group[0].retrieved_at)}</p>
-          <div className="translation-pair">
-            <div><small>Original</small><p dir="auto">{group.map(s => s.text).join(" ")}</p></div>
-            {target && <div lang={target} dir={target === "ur" ? "rtl" : "ltr"}>
-              <small>{target === "ur" ? "Urdu" : "English"}</small>
-              <p>{group.map(s => cached.get(s.id)?.text || (data?.job?.status === "failed" || (!data?.available && data) ? "[Translation unavailable]" : "[Translation pending…]")).join(" ")}</p>
-            </div>}
-          </div>
-          <a href={link(video.url, group[0].start_seconds)} target="_blank" rel="noreferrer">Open this timestamp ↗</a>
-        </article>
-      ))}
-      {full && <PageControls page={page} total={segments.length} onChange={setPage} label="transcript segments" />}
+      {groups
+        .filter((group) => group.length)
+        .map((group) => (
+          <article className="translation-segment" key={group[0].id}>
+            <p className="source-meta">
+              {stamp(group[0].start_seconds)}
+              {group.at(-1)!.end_seconds !== null
+                ? ` → ${stamp(group.at(-1)!.end_seconds)}`
+                : ""}{" "}
+              · {group[0].provenance} · Retrieved {date(group[0].retrieved_at)}
+            </p>
+            <div className="translation-pair">
+              <div>
+                <small>Original</small>
+                <p dir="auto">{group.map((s) => s.text).join(" ")}</p>
+              </div>
+              {target && (
+                <div lang={target} dir={target === "ur" ? "rtl" : "ltr"}>
+                  <small>{target === "ur" ? "Urdu" : "English"}</small>
+                  <p>
+                    {group
+                      .map(
+                        (s) =>
+                          cached.get(s.id)?.text ||
+                          (data?.job?.status === "failed" ||
+                          (!data?.available && data)
+                            ? "[Translation unavailable]"
+                            : "[Translation pending…]"),
+                      )
+                      .join(" ")}
+                  </p>
+                </div>
+              )}
+            </div>
+            <a
+              href={link(video.url, group[0].start_seconds)}
+              target="_blank"
+              rel="noreferrer"
+            >
+              Open this timestamp ↗
+            </a>
+          </article>
+        ))}
+      {full && (
+        <PageControls
+          page={page}
+          total={segments.length}
+          onChange={setPage}
+          label="transcript segments"
+        />
+      )}
     </section>
   );
 }

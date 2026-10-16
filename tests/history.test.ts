@@ -15,31 +15,75 @@ test("six calendar months clamp month ends and use the Karachi date", () => {
   assert.equal(sixMonthsAgo(new Date("2026-01-31T12:00:00Z")), "2025-07-31");
 });
 test("history extension preserves paused channels, data and longer windows and runs once", () => {
-  db.prepare("INSERT INTO channel_checkpoints(source_id,since,until,paused,page_token,discovery_complete,updated_at) VALUES(2,'2026-07-15','2026-10-13',1,'old',1,?)").run(now());
+  db.prepare(
+    "INSERT INTO channel_checkpoints(source_id,since,until,paused,page_token,discovery_complete,updated_at) VALUES(2,'2026-07-15','2026-10-13',1,'old',1,?)",
+  ).run(now());
   db.prepare("UPDATE sources SET enabled=0 WHERE id=2").run();
   extendHistory();
-  const cp = db.prepare("SELECT * FROM channel_checkpoints WHERE source_id=2").get() as any;
+  const cp = db
+    .prepare("SELECT * FROM channel_checkpoints WHERE source_id=2")
+    .get() as any;
   assert.equal(cp.since, "2026-04-13");
   assert.equal(cp.paused, 1);
   assert.equal(cp.page_token, null);
   assert.equal(cp.discovery_complete, 0);
-  assert.equal((db.prepare("SELECT enabled FROM sources WHERE id=2").get() as any).enabled, 0);
-  db.prepare("UPDATE channel_checkpoints SET page_token='new' WHERE source_id=2").run();
+  assert.equal(
+    (db.prepare("SELECT enabled FROM sources WHERE id=2").get() as any).enabled,
+    0,
+  );
+  db.prepare(
+    "UPDATE channel_checkpoints SET page_token='new' WHERE source_id=2",
+  ).run();
   extendHistory();
-  assert.equal((db.prepare("SELECT page_token FROM channel_checkpoints WHERE source_id=2").get() as any).page_token, "new");
-  db.prepare("INSERT INTO channel_checkpoints(source_id,since,until,updated_at) VALUES(3,'2025-01-01','2026-10-13',?)").run(now());
+  assert.equal(
+    (
+      db
+        .prepare("SELECT page_token FROM channel_checkpoints WHERE source_id=2")
+        .get() as any
+    ).page_token,
+    "new",
+  );
+  db.prepare(
+    "INSERT INTO channel_checkpoints(source_id,since,until,updated_at) VALUES(3,'2025-01-01','2026-10-13',?)",
+  ).run(now());
   extendHistory();
-  assert.equal((db.prepare("SELECT since FROM channel_checkpoints WHERE source_id=3").get() as any).since, "2025-01-01");
+  assert.equal(
+    (
+      db
+        .prepare("SELECT since FROM channel_checkpoints WHERE source_id=3")
+        .get() as any
+    ).since,
+    "2025-01-01",
+  );
 });
 test("extension waits for running discovery and sync does not reset an active job", () => {
-  db.prepare("UPDATE channel_checkpoints SET history_version=0,since='2026-07-15',page_token='running' WHERE source_id=2").run();
+  db.prepare(
+    "UPDATE channel_checkpoints SET history_version=0,since='2026-07-15',page_token='running' WHERE source_id=2",
+  ).run();
   const job = queue("channel_sync", { source_id: 2 });
   db.prepare("UPDATE jobs SET status='running' WHERE id=?").run(job);
   extendHistory();
   assert.equal(syncChannel(2), job);
-  assert.equal((db.prepare("SELECT page_token FROM channel_checkpoints WHERE source_id=2").get() as any).page_token, "running");
+  assert.equal(
+    (
+      db
+        .prepare("SELECT page_token FROM channel_checkpoints WHERE source_id=2")
+        .get() as any
+    ).page_token,
+    "running",
+  );
   db.prepare("UPDATE jobs SET status='done' WHERE id=?").run(job);
   extendHistory();
-  assert.equal((db.prepare("SELECT since FROM channel_checkpoints WHERE source_id=2").get() as any).since, "2026-04-13");
+  assert.equal(
+    (
+      db
+        .prepare("SELECT since FROM channel_checkpoints WHERE source_id=2")
+        .get() as any
+    ).since,
+    "2026-04-13",
+  );
 });
-test.after(() => { db.close(); rmSync(temp, { recursive: true, force: true }); });
+test.after(() => {
+  db.close();
+  rmSync(temp, { recursive: true, force: true });
+});

@@ -10,7 +10,9 @@ export function today(date = new Date()) {
 export function sixMonthsAgo(date = new Date()) {
   const [year, month, day] = today(date).split("-").map(Number);
   const target = new Date(Date.UTC(year, month - 7, 1));
-  const last = new Date(Date.UTC(target.getUTCFullYear(), target.getUTCMonth() + 1, 0)).getUTCDate();
+  const last = new Date(
+    Date.UTC(target.getUTCFullYear(), target.getUTCMonth() + 1, 0),
+  ).getUTCDate();
   target.setUTCDate(Math.min(day, last));
   return target.toISOString().slice(0, 10);
 }
