@@ -1,6 +1,9 @@
 node_modules/
 .next/
 data/
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
 .env*
 !.env.example
 *.tsbuildinfo
@@ -9,3 +12,9 @@ test-results/
 
 preview.png
 *.idea
+.DS_Store
+*.log
+*.pem
+*.key
+.aws/
+.codex/

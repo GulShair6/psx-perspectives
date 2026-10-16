@@ -1,7 +1,15 @@
 "use client";
 import { useState, useEffect } from "react";
 import { StockPicker } from "./research-ui";
-import { api, date, stamp, link, type Statement } from "./expert-shared";
+import {
+  api,
+  date,
+  stamp,
+  link,
+  type Statement,
+  type Preview,
+} from "./expert-shared";
+import TranscriptTranslation from "./transcript-translation";
 export function AliasEditor({
   stocks,
   save,
@@ -70,7 +78,8 @@ export function StatementReview({
     [evaluate, setEvaluate] = useState(false),
     [error, setError] = useState(""),
     [saving, setSaving] = useState(false),
-    [original, setOriginal] = useState(s.quote);
+    [original, setOriginal] = useState(s.quote),
+    [source, setSource] = useState<Preview | null>(null);
   useEffect(() => {
     setSymbol(s.symbols?.split(",")[0] || "");
     setStance(s.stance);
@@ -84,14 +93,17 @@ export function StatementReview({
   }, [s]);
   useEffect(() => {
     let canceled = false;
+    setSource(null);
     setOriginal("Loading saved passage…");
-    api<{ chunks: { id: number; text: string }[] }>("video?id=" + s.video_id)
+    api<Preview>("video?id=" + s.video_id)
       .then((d) => {
-        if (!canceled)
+        if (!canceled) {
+          setSource(d);
           setOriginal(
             d.chunks.find((c) => c.id === s.chunk_id)?.text ||
               "Original passage unavailable; inspect the video before approving.",
           );
+        }
       })
       .catch(() => {
         if (!canceled)
@@ -103,6 +115,13 @@ export function StatementReview({
       canceled = true;
     };
   }, [s.video_id, s.chunk_id]);
+  const segmentIds = new Set(
+    source?.chunks.find((c) => c.id === s.chunk_id)?.segmentIds || [],
+  );
+  const segments =
+    source?.video.id === s.video_id
+      ? source.segments.filter((row) => segmentIds.has(row.id))
+      : [];
   async function submit(status: string, next = false) {
     setSaving(true);
     setError("");
@@ -136,7 +155,11 @@ export function StatementReview({
         </p>
         <details open>
           <summary>Original saved passage</summary>
-          <p dir="auto">{original}</p>
+          {source && segments.length ? (
+            <TranscriptTranslation video={source.video} segments={segments} />
+          ) : (
+            <p dir="auto">{original}</p>
+          )}
         </details>
         <blockquote dir="auto">{s.quote}</blockquote>
         <a href={link(s.url, s.start_seconds)} target="_blank" rel="noreferrer">
@@ -212,6 +235,10 @@ export function StatementReview({
           />{" "}
           Use corrected stock and stance as my independent accuracy reference
         </label>
+        <p className="source-meta">
+          AI translation is a reading aid. Confirm the original caption or audio
+          before using it as an independent accuracy reference.
+        </p>
         {error && <p role="alert">{error}</p>}
         <div className="expert-actions">
           <button disabled={saving}>Save review</button>

@@ -407,7 +407,7 @@ test("automatic channel collection saves captions without a key and skips saved 
   delete process.env.OPENAI_API_KEY;
   let captionRequests = 0;
   const published = new Date(Date.now() - 86400000).toISOString();
-  globalThis.fetch = async (input, init) => {
+  globalThis.fetch = async (input) => {
     const url = new URL(String(input));
     if (url.hostname === "scstrade.com")
       return new Response(
@@ -578,7 +578,6 @@ test("Ollama Cloud validates evidence without an application cap or usage metada
   };
   const call = () =>
     askJson(
-      "test cloud",
       "Respond as JSON",
       {},
       {
@@ -603,6 +602,18 @@ test("Ollama Cloud validates evidence without an application cap or usage metada
     );
     raw = '```json\n{"ok":true}\n```';
     assert.deepEqual(await call(), { ok: true });
+    raw = '```json\n{\n  "ok": true\n }\n ```';
+    assert.deepEqual(await call(), { ok: true });
+    raw = '```json\r\n{"ok":true}\r\n\t```';
+    assert.deepEqual(await call(), { ok: true });
+    for (const invalid of [
+      '```json\n{"ok":true}\n ``` extra prose',
+      '```json\n{"ok":true}\n ```\n```json\n{"ok":false}\n```',
+      '```json\n{"ok":\n ```',
+    ]) {
+      raw = invalid;
+      await assert.rejects(call(), /JSON/);
+    }
     raw = "unstructured output";
     await assert.rejects(call(), /JSON/);
     raw = '{"ok":false}';
@@ -777,4 +788,29 @@ test("state endpoint excludes application budget and quota fields", async () => 
   const state = await response.json();
   assert.equal("budget" in state, false);
   assert.equal("quota" in state, false);
+});
+
+test("state endpoint retains running work behind a backlog of newer jobs", async () => {
+  const insert = db.prepare(
+    "INSERT INTO jobs(type,payload,status,created_at,updated_at) VALUES('visibility_fixture','{}',?,?,?)",
+  );
+  const running = Number(insert.run("running", now(), now()).lastInsertRowid);
+  for (let i = 0; i < 31; i++) insert.run("queued", now(), now());
+  try {
+    const { NextRequest } = await import("next/server");
+    const { GET } = await import("../app/api/[...path]/route");
+    const response = await GET(
+      new NextRequest("http://127.0.0.1:3000/api/state", {
+        headers: { host: "127.0.0.1:3000" },
+      }),
+      { params: Promise.resolve({ path: ["state"] }) },
+    );
+    assert.equal(response.status, 200);
+    const state = await response.json();
+    assert.equal(state.jobs.length, 30);
+    assert.ok(state.jobs.some((job: { id: number }) => job.id === running));
+    assert.equal(state.jobs[0].status, "running");
+  } finally {
+    db.prepare("DELETE FROM jobs WHERE type='visibility_fixture'").run();
+  }
 });

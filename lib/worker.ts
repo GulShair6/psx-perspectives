@@ -14,6 +14,7 @@ import { collectChannel, syncChannel, extendHistory } from "./channels";
 import { sixMonthsAgo } from "./time";
 import { indexVideo, refreshCatalog } from "./knowledge";
 import { analyzeInsights, scheduleInsights, pipeline } from "./expert";
+import { translateJob } from "./translations";
 export const DISCOVERY_INTERVAL = 6 * 60 * 60 * 1000;
 export const CAPTION_RETRY_INTERVAL = 24 * 60 * 60 * 1000;
 
@@ -453,6 +454,7 @@ export async function runJob(job: {
       .prepare("UPDATE jobs SET progress=?,updated_at=? WHERE id=?")
       .run(text, now(), job.id);
   if (job.type === "catalog") return refreshCatalog();
+  if (job.type === "translate") return translateJob(p, progress);
   if (job.type === "insights") return analyzeInsights(p.id, progress);
   if (job.type === "channel_sync") {
     try {

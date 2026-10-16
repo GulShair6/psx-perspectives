@@ -131,10 +131,16 @@ export async function followChannel(id: string) {
 }
 export function extendHistory() {
   db.transaction(() => {
-    const checkpoints = db.prepare("SELECT source_id,since,until FROM channel_checkpoints WHERE history_version=0 AND NOT EXISTS(SELECT 1 FROM jobs WHERE type='channel_sync' AND status='running' AND json_extract(payload,'$.source_id')=channel_checkpoints.source_id)").all() as {source_id:number; since:string; until:string}[];
+    const checkpoints = db
+      .prepare(
+        "SELECT source_id,since,until FROM channel_checkpoints WHERE history_version=0 AND NOT EXISTS(SELECT 1 FROM jobs WHERE type='channel_sync' AND status='running' AND json_extract(payload,'$.source_id')=channel_checkpoints.source_id)",
+      )
+      .all() as { source_id: number; since: string; until: string }[];
     for (const cp of checkpoints) {
       const since = sixMonthsAgo(new Date(cp.until + "T12:00:00+05:00"));
-      db.prepare("UPDATE channel_checkpoints SET history_version=1,since=MIN(since,?),page_token=CASE WHEN since>? THEN NULL ELSE page_token END,discovery_complete=CASE WHEN since>? THEN 0 ELSE discovery_complete END,updated_at=? WHERE source_id=?").run(since, since, since, now(), cp.source_id);
+      db.prepare(
+        "UPDATE channel_checkpoints SET history_version=1,since=MIN(since,?),page_token=CASE WHEN since>? THEN NULL ELSE page_token END,discovery_complete=CASE WHEN since>? THEN 0 ELSE discovery_complete END,updated_at=? WHERE source_id=?",
+      ).run(since, since, since, now(), cp.source_id);
     }
   }).immediate();
 }
@@ -151,7 +157,9 @@ export function syncChannel(id: number, resume = false) {
         )
         .get(id) as { id: number } | undefined;
       if (active) {
-        db.prepare("UPDATE channel_checkpoints SET paused=0 WHERE source_id=?").run(id);
+        db.prepare(
+          "UPDATE channel_checkpoints SET paused=0 WHERE source_id=?",
+        ).run(id);
         db.prepare("UPDATE sources SET enabled=1 WHERE id=?").run(id);
         return active.id;
       }

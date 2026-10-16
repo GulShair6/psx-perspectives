@@ -1,138 +1,142 @@
 # PSX Perspectives
 
-A personal, local Next.js + TypeScript application for researching expert YouTube commentary through dated, cited transcripts. A separate company view retains Pakistan Stock Exchange fundamentals. Company metrics and expert opinions remain separate. No trades, predicted returns or synthetic market data.
+[Quick start](#quick-start) · [Contributing](CONTRIBUTING.md) · [Security](SECURITY.md) · [MIT license](LICENSE)
 
-## Run
+A local research workspace for exploring what YouTube channels say about Pakistan Stock Exchange companies. Ask questions in English, Urdu, or mixed language, compare dated perspectives, and inspect the original transcript behind each citation.
 
-Requires Node.js 22.13+ and npm. Linux systems without a compatible SQLite prebuilt binary need their usual C++ build tools.
+PSX Perspectives keeps expert commentary separate from company fundamentals. It helps you inspect evidence; it does not place trades, predict returns, or certify investment recommendations.
+
+![PSX Perspectives research workspace with followed channels, date filters, and a source-grounded question form](docs/images/workspace.png)
+
+The preview uses synthetic test data. Collected transcripts and personal research are not included in this repository.
+
+## What you can do
+
+- Follow a channel after confirming its identity and collect up to six calendar months of public video metadata and available captions.
+- Read channel timelines, cited summaries, and stock/topic statements. Correct or reject automatic statements against the original transcript.
+- Ask across selected channels, dates, and stocks. Open saved evidence beside the answer, with video timestamps when the source supplies them.
+- Import TXT, SRT, or VTT transcript text when captions are unavailable.
+- Translate saved transcripts and source passages into Urdu or English alongside the original, with reusable saved results.
+- Use Company research for a ten-company fundamentals dashboard, watchlists, four-company comparisons, and dated official PSX observations.
+- Edit bilingual stock aliases, inspect collection jobs, and export company research as CSV or Markdown.
+
+## Quick start
+
+Requires **Node.js 22.13+** and npm. Linux may need C++ build tools if a compatible `better-sqlite3` binary is unavailable.
 
 ```sh
+git clone https://github.com/GulShair6/psx-perspectives.git
+cd psx-perspectives
 npm ci
 cp .env.example .env
 npm run dev
 ```
 
-Open http://127.0.0.1:3000. One command starts the Next.js application and a separate ingestion worker. Ctrl+C stops both. Keep all dependencies installed: the worker uses `tsx` in development and production.
+Open [PSX Perspectives locally](http://127.0.0.1:3000). The launcher starts the website and a separate ingestion worker. Stop both with Ctrl+C.
 
-Enter `OLLAMA_API_KEY` in `.env` for automatic insights, bilingual query planning, evidence reranking and research answers. Enter `YOUTUBE_DATA_API_KEY` for channel-name search and complete uploads-playlist discovery. Enable **YouTube Data API v3** in your Google Cloud project, restrict the key to that API, and keep it server-side. Do not apply browser-referrer restrictions to this server key. Set `.env` permissions to `0600`. Restart after changing configuration. The expert pipeline uses only Ollama Cloud; it has no local model, embedding, or paid-provider fallback. Legacy company research may use the optional OpenAI setting when Ollama is absent.
+The first run creates a SQLite database and seeds the company/source catalog. It does not ship someone else's research corpus. Import transcripts or configure collection to build your own evidence library. Without provider keys you can inspect saved evidence and use lexical search; cloud synthesis and channel-name discovery require their respective keys.
 
-Both processes load `.env`, then optional `.env.local`; inherited variables take precedence. Credentials never appear in API responses, logs or exports. Without a YouTube key, existing evidence remains usable and legacy official sources can collect their recent feed, explicitly marked incomplete. Without an Ollama key, indexed passages are still searchable; synthesis is unavailable.
+For a production build on your own computer:
 
 ```sh
 npm run build
 npm start
 ```
 
-Production also starts both processes and binds to localhost. This application has no authentication and must not be exposed to the internet or a public reverse proxy.
+**Run on localhost only.** This app has no user authentication and is not designed as a public hosted service. Sharing the source repository is supported; exposing your running research workspace to the internet is not.
 
-## Expert research workflow
+## Configuration
 
-1. Open **Expert research** (the default), choose **Add Channel**, search by channel name, `@handle` or `/channel/UC…` URL, inspect the matching identity, then **Confirm and follow**. Names alone never select a person automatically.
-2. The sequential worker paginates the channel’s uploads playlist for the last six calendar months using Pakistan date boundaries and month-end clamping. It saves page checkpoints before caption attempts, covers educational/general-market titles too, and processes available transcripts newest first. Enabled channels check every six hours while the worker runs. **Pause**, **Resume** and **Sync history** are available under each channel’s **Coverage & collection** disclosure. Missing captions retry at most daily; cached transcripts and reviews remain intact.
-3. Original segments, languages, caption provenance and supplied times are saved separately from overlapping searchable chunks. Captions prefer creator-supplied tracks, then automatic tracks; neither guarantees word accuracy. Previously saved grouped passages are indexed without inventing unavailable segment end times or provenance. Paste TXT/SRT/VTT through **Transcripts** when public captions are missing.
-4. Indexing immediately enables lexical retrieval. Automatic Ollama summaries and stock/topic statements follow independently. Extraction version `expert-2` selects contiguous saved caption segments; quotations and timestamps are reconstructed by the server. Statements distinguish stance from explicit buy/sell/hold/watch/avoid actions, require supporting quotes and explicit targets/horizons, and default attribution to the channel, not its owner or guest. Invalid claims are quarantined individually. Inspect original text, correct or reject statements in the timeline, and save an independent stock/stance accuracy reference if evaluated. Original extraction payloads remain immutable. Summaries include saved supporting quotes.
-5. Select channels, dates and optionally a stock, then ask in Urdu, English or mixed language. Retrieval scopes SQLite FTS and structured stock/topic relationships before applying limits. Cached Ollama plans identify stock, chronology, comparison or market-overview intent and bilingual phrases. Up to eighty candidates are fused by reciprocal rank, balanced across channels and deduplicated. One bounded Ollama relevance call ranks at most thirty candidates; unknown IDs, partial judgments or provider failures fall back to deterministic ranking. Up to twelve primary passages plus supporting context fit a fifty-thousand-byte evidence budget. Earlier/later pairs and cross-channel evidence take priority; bounded retrieval never establishes exhaustive consensus. Citations reveal saved passages and original video links, with timestamps only when supplied.
-6. “Current” means latest indexed commentary within the selected period. Every answer reports that cutoff, separates reported views, changes, disagreements, interpretation and gaps, and labels automatic output **AI-generated, not human-reviewed**. Company observations are opt-in through the combined evidence setting. Historical targets/prices stay historical. Human-reviewed statements remain distinguishable. Verified company consensus still requires at least **30 independent source passages/chunks and 90% accuracy** and uses approved non-hypothetical expert opinions; automatic statements never count as approved consensus.
-7. **Company research** retains the watchlist, four-company comparison, dated official observations and existing reviewed-opinion workflow. The broader official symbol catalog is separate from the ten-company fundamentals dashboard; edit Urdu/English aliases under **Settings → Stock catalog & bilingual aliases**.
+Set keys in `.env`, never in source code. On Unix, use `chmod 600 .env`. Restart the app after editing configuration.
 
-Collection and analysis progress appears beside the research workflow. Provider access or authentication failures pause automatic analysis while transcript indexing stays available. Resume cloud analysis after resolving the cause; completed chunk checkpoints avoid repeating successful calls. Results are cached by transcript hash and analysis version. Six-month history extension runs once for older checkpoints without unpausing channels; running discovery is allowed to finish before extension. Old automatic statements remain usable until the new extraction run completes. Human review/rejection decisions and historical payloads remain intact; timeline counts distinguish accepted and quarantined claims. Query plans are cached for seven days with question, filters and planner version. A failed non-quota analysis can be retried using the progress panel.
+- `OLLAMA_API_KEY`: enables expert summaries, extraction, bilingual query planning, relevance ranking, and answers through Ollama Cloud (`gemma4:31b`). Expert research uses this provider only.
+- `YOUTUBE_DATA_API_KEY`: enables channel search and paginated uploads discovery. Enable YouTube Data API v3 and restrict the server key to that API. Browser-referrer restrictions are unsuitable for this server-side integration.
+- `OPENAI_API_KEY`: optional provider for company research when Ollama is absent; it does not enable expert cloud research.
+- `PSX_DB_PATH`: optional database path; defaults to `data/research.sqlite`.
 
-## Data and limits
+Both processes load `.env`, then `.env.local`; inherited environment variables take precedence. Keep development dependencies installed in production because the worker uses `tsx`.
 
-- The live PSX proof validates symbols against each page title before saving its quote. Prices, financial summaries, ratios and announcement links are parsed from official pages. Observations retain retrieval times, quote dates, reporting periods, units and source URLs. Financial summaries may be standardized by PSX's data supplier; the P/E quote is based on unconsolidated financials.
-- Displayed 1Y price returns exclude payouts. Debt/equity, ROE and dividend yield are not inferred when absent. The payout endpoint can fail or change; these failures are recorded in company notes, with no synthetic fallback.
-- The legacy recent-feed collector verifies that the channel ID appears on its configured official page. The pilot SCS and PSX IDs were found on official sites. InvestKaar is seeded but unresolved and will fail discovery until a valid channel page/identity is supplied. This is identity provenance, not a claim of investment expertise.
-- Automatic collection does not need an OpenAI key. Enable or pause each source in Settings; last check, next check, and source errors appear in Transcripts. Only one queued/running discovery job per channel is allowed, including manual checks and retries. YouTube rate blocks stop the current batch instead of repeatedly hitting a blocked endpoint. Automation stops when the local worker is stopped.
-- Full collection uses the official channels, playlistItems and videos APIs, including pagination, public-video checks and channel ownership checks. Coverage never claims completion until discovery exhausts the uploads playlist. Recent-feed fallback has no keyword filter but cannot establish full-period coverage. Channel timelines display the newest 500 saved videos and 300 statements; coverage counts include the entire displayed collection period.
-- Captions can be missing or blocked. Both classic second timestamps and srv3 millisecond timestamps are normalized. Manual transcript imports are the supported fallback; no audio is downloaded. Plain transcripts receive video citations without fabricated timestamps.
-- Shariah status stays unverified unless you review a dated official PSX classification in Settings. Entries older than 180 days are excluded from the compliant filter. This freshness rule is a research convention, not a certification.
-- The interface and evidence storage are local. Selected expert evidence is sent to Ollama Cloud for extraction and answers; legacy company research follows its configured provider. AI evidence is treated as untrusted text; it cannot execute tools or modify your database through instructions in a transcript.
-- AI calls use the configured provider without an application budget or quota cap. Provider access limits still apply; the app does not purchase credits or automatically switch providers. Structured JSON, exact quote and citation validation remain mandatory.
-- PSX and YouTube source content is not covered by this code's MIT license. Review source access terms for your intended use; do not publicly redistribute market data without the required rights. No PSX Alpha code was copied.
+Selected questions and evidence are sent to the configured cloud provider. Calls have no application spending cap; provider account limits still apply. Credentials remain server-side. Environment files, collected data, backups, and browser artifacts are ignored by Git.
 
-Research remains lexical and structured RAG, with no semantic vector search, embeddings or GraphRAG. Ollama Cloud is the only expert AI provider; unavailable planning/reranking falls back to deterministic retrieval and failed synthesis returns saved evidence without a generated conclusion.
+## A first research session
 
-Public caption retrieval is best effort: YouTube’s official [caption download API](https://developers.google.com/youtube/v3/docs/captions/download) requires permission to edit the video. An ordinary Data API key enables metadata discovery, not universal transcript access. No audio transcription, vector search, local models, Neo4j, trade execution or expert-performance ranking is included.
+1. In **Expert research**, choose **Add Channel**, search a name, `@handle`, or channel URL, inspect the identity, then confirm it.
+2. Inspect **Coverage & collection** for discovery/indexing progress, missing captions, errors, pause/resume, and history synchronization. Enabled channels check every six hours while the worker runs.
+3. Open **Insights & timeline** to browse statements or videos. Cited summaries and transcript previews preserve original text and supplied times. Automatic claims can be reviewed and corrected independently of the immutable extraction payload.
+4. Select channels, dates, and optionally a stock. Ask a question such as “How did these channels' views on OGDC change during the selected period?”
+5. Open each citation and check its context. An answer's cutoff is the latest indexed commentary in the selected period, not a live market view. Missing or invalid cloud responses leave retrieved evidence available with an explicit gap.
 
-## Backup and export
+For manual imports, switch to **Company research → Transcripts**. Paste the transcript with its video URL, title, speaker, publication date, and language. Plain text receives video citations without fabricated timestamps.
 
-The database lives at `data/research.sqlite`; set `PSX_DB_PATH` to use another path. SQL migrations are versioned and applied transactionally. Data, credentials, browser artifacts and backups are ignored by Git.
+Company observations can be included in expert answers through the combined evidence setting. Company prices, historical channel targets, and opinions remain distinct. Company collection can be queued from the interface or with `npm run refresh`.
 
-```sh
-npm run backup
-```
+### Read a translation
 
-Uses SQLite's online backup API, including committed WAL content, to create a dated database in `data/backups/`. To restore, stop both processes and restore the backup to a clean database location, then point `PSX_DB_PATH` at it. Never replace a running database or leave old WAL/SHM files next to a replacement.
+Open a transcript, a transcript citation, or **Review / correct statement**, then choose **Translate to Urdu** or **Translate to English**. The full transcript viewer translates the entire saved transcript; citation and review panels translate only their displayed source passage and context. The original remains visible beside the translation, or above it on smaller screens. Original timestamps and video links are retained.
 
-Export CSV from the dashboard or Markdown from Settings. Exports are personal local deliverables; CSV cells are escaped against spreadsheet formula injection.
+Translation uses the existing Ollama Cloud key and ingestion worker. Requested saved caption text, the video title and the source-language hint are sent to the provider; there is no automatic bulk translation or audio transcription. Source-language labels are hints, so a mislabeled track can still be translated. Long transcripts run as background jobs and continue after closing the viewer. Progress and partial results appear in the panel. Reopening and choosing the language reuses saved results. **Retry translation** resumes missing segments after a failure; provider quota/authentication failures require restoring the connection and resuming cloud analysis first.
 
-## Validation
+Translations are labeled **AI translation — not human-reviewed**. Only structurally valid output with unchanged numerical notation is saved. Cached results remain readable without a provider key, and a changed transcript or translation version does not reuse stale results. The original source still drives search, answers, citations and review scores; translation alone does not count as an independent accuracy review. Confirm the original caption or audio before selecting the accuracy-reference checkbox. Caption mistakes, mistranslated names, units and meaning can survive these checks.
+
+## How it works
+
+The Next.js/React interface talks to a localhost-only API. SQLite stores original caption segments, searchable chunks, company snapshots, review decisions, and resumable job checkpoints. A sequential worker discovers videos, retrieves available captions, indexes transcripts, and queues cloud analysis.
+
+Retrieval scopes SQLite full-text search and stock/topic relationships to your filters before ranking. It combines deterministic retrieval with optional cached bilingual planning and bounded cloud reranking. Selected evidence feeds a structured answer whose quotations, numbers, and citations are validated. A rejected synthesis can receive one correction attempt using the same evidence and validation rules. If correction fails, the app returns evidence and gaps instead of an unsupported conclusion.
+
+This is lexical and structured retrieval, without embeddings, a vector database, or GraphRAG. The broader stock-symbol catalog is separate from the ten-company fundamentals dashboard.
+
+The source is organized into `app/` (interface and API), `lib/` (collection, retrieval, validation, and storage), `migrations/` (transactional schema updates), `scripts/` (launch/maintenance/browser checks), and `tests/` (isolated regressions and acceptance questions).
+
+## Limits and verification status
+
+- Captions may be missing, blocked, or inaccurate. Automatic tracks can mislabel spoken Urdu. A YouTube Data API key enables metadata discovery, not universal caption download. Manual imports are the supported fallback; no audio is downloaded or transcribed.
+- Collection coverage is explicit. Recent-feed fallback cannot establish complete history; bounded retrieval cannot establish exhaustive agreement between channels. Historical imports cannot recover timestamps or provenance that were never saved.
+- AI output is labeled as automatic and needs human review. Independent real-corpus evaluation is still pending: the 20-question relevance checklist in `tests/expert-research-questions.json` (at least 18 must retrieve independently labeled required evidence, including chronological and cross-channel context, or correctly identify its absence), and at least 30 independently reviewed real passages/chunks with 90% stock/stance accuracy. Fixture success does not certify model quality. Verified company consensus remains gated by independent review.
+- Public source layouts, captions, provider availability, and quotas can change. Source failures remain visible. Missing company metrics are not synthesized; 1Y price returns exclude payouts. Dividend endpoints may be unavailable.
+- Shariah classification requires a dated human-reviewed official source. Classifications older than 180 days are excluded from the compliant filter; this convention is not a certification.
+- Seeded InvestKaar identity remains unresolved until a valid channel identity is supplied. Channel-name search and full uploads discovery require a YouTube key. Discovery completeness and transcript availability are reported separately.
+
+## Tests
 
 ```sh
 npm test
 npm run typecheck
 npm run build
-npm run proof
-npm run refresh
 npx playwright install chromium
 npm run test:browser
 ```
 
-Core tests use an isolated temporary database. Reliable-RAG regressions additionally cover calendar boundaries, checkpoint extension, source-segment quotation ranges, extraction version isolation, scoped retrieval beyond the former global statement limit, overview breadth, review preservation and cloud-ranking fallback/budgets. Automatic collection checks cover persisted scheduling, disabled sources, duplicate jobs, caption saving, normalized timestamps, daily cooldowns and stopping a rate-blocked batch. They cover parsers, aliases, negated evidence, caption units, duplicates, review corrections, the distinct-passage accuracy gate, citations, unsupported figures, failure preservation, job claims and uncapped cloud calls with historical usage records.
+The automated suites cover parsers, calendar boundaries, resumable collection, source identity, scoped retrieval, extraction validation, review preservation, provider failures, credential redaction, and request validation. Browser checks launch an isolated production server/worker and exercise research, evidence, imports, reviews, watchlists, comparison, settings, exports, connection recovery, keyboard interactions, accessibility, and responsive layouts. Synthetic browser fixtures are labeled and never added to your database.
 
-The browser check starts its own isolated production server and worker, copies only real saved company observations, and labels any review fixtures as test data. It exercises four-company comparison, watchlists, transcript import, review, source editing, classification filtering, exports, job progress, chat's missing-key message and mobile layout. It removes its isolated database afterward.
+Browser checks require a completed build. Screenshots are saved under ignored `data/browser-artifacts/`. Tests validate implementation behavior; they do not guarantee live source availability or financial/model accuracy.
 
-Live acceptance questions are in `tests/research-questions.json`. Ten real AI answers and the 30-passage extraction review require your API key and approved real transcripts. The app leaves consensus disabled until that review is actually passed. Synthetic test fixtures never unlock your real workspace.
+`npm run proof` is an optional live PSX/feed/caption smoke check. `npm run refresh` retrieves official observations and updates your database. Both depend on external services and are separate from deterministic tests.
 
-See `VALIDATION.md` for the checks completed during implementation and limitations.
+Before live release sign-off:
 
-## Server interfaces
+1. Configure the YouTube key locally and restart. Confirm a searched channel, synchronize its history, and inspect coverage, saved transcripts, and pause/resume behavior. Record missing captions and discovery errors.
+2. Use [the 20-question checklist](tests/expert-research-questions.json). Fix the channel/date filters for each question, independently identify the required source passages before asking, and check the top-ten retrieved evidence, answer citations, dates, and timestamps. Record each result; at least 18 of 20 must meet the evidence requirement or correctly report its absence.
+3. Open a channel's timeline and choose **Review / correct statement**. Check the original passage, correct the stock and stance, then select **Use corrected stock and stance as my independent accuracy reference** before saving. Evaluate at least 30 distinct real source passages/chunks; stock/stance accuracy must reach 90%. Keep these private review records outside the public repository.
 
-All endpoints live under `/api`, use the Node runtime and are restricted to localhost. Mutations require same-origin JSON requests. Inputs are validated; fetched hosts are allowlisted and redirects are rejected.
+## Backup and restore
 
-- `GET /api/state?since=YYYY-MM-DD`: scorecard, observations, reviewed opinions, sources, recent jobs and worker status.
-- `GET /api/export?format=csv|markdown`: local research export.
-- `POST /api/refresh`: `{symbols: string[]}`; queue official company retrieval.
-- `POST /api/import`: `{url,title,speaker,published_at,text,language,source_id}`; queue a transcript import; language is `ur|en|mixed|unknown`, source ID is nullable.
-- `POST /api/extract`: `{id: videoId}`; queue opinion extraction.
-- `POST /api/discover`: `{source_id: number}`; verify the source and queue feed/caption ingestion.
-- `POST /api/review`: corrected opinion fields, decision and optional human reference assessment.
-- `POST /api/watchlist`: `{symbol,watched}`.
-- `POST /api/sources`: source identity, URL, nullable channel ID, role and enabled state; optional ID updates an existing source.
-- `POST /api/classification`: `{symbol,status,as_of,source_url,confirmed:true}`; save a human-reviewed dated classification.
-- `POST /api/chat`: `{question,symbols,since}`; retrieve evidence and return structured facts, expert views, interpretation, gaps and validated citations.
-- `POST /api/retry`: `{id: failedJobId}`; queue a new attempt without deleting previous evidence or history.
+```sh
+npm run backup
+```
 
-No NestJS, graph database, automated transcription, overall stock rankings or broker integration.
+The backup uses SQLite's online backup API, including committed WAL content, and saves a dated file under `data/backups/`. If you use a custom database path, run the command with the same `PSX_DB_PATH` environment variable. The standalone maintenance scripts do not automatically load `.env`.
 
-## Company research workflow
+Take a backup before upgrading; migrations run automatically on database initialization. Restarting the worker resumes collection and analysis.
 
-Switch to Company research. Your watchlist opens by default when populated; the section, filter and four-company selection persist in this browser. Source price dates and retrieval times are separate; cached observations older than 48 hours show Refresh due. Use the comparison tray to compare or ask about the selected companies, and open citations to inspect saved evidence.
+To restore, stop the website and worker, copy the backup to a clean database location, set `PSX_DB_PATH` to it, and restart. Do not replace a running database or reuse stale WAL/SHM files beside a replacement.
 
-Captions index and generate expert insights automatically while the worker runs. Optional extraction for the company opinion scorecard remains user-triggered: Transcripts offers source/status filters, previews, per-video analysis, and Analyze ready transcripts (newest ten). Batch progress stays visible in the current screen. Invalid extractions fail visibly; provider access or authentication failures stop the batch and leave remaining transcripts unprocessed. Review each supported opinion against the original passage; Save and next continues to the next pending review. No supported opinions found is a completed analysis, not an approved recommendation.
+## Contributing and licensing
 
-`POST /api/extract-batch` accepts `{ids: string[]}` (one to ten unique saved video IDs) and returns `{job: number}`. `GET /api/video?id=VIDEO_ID` returns saved video metadata and timestamped passages. Single and batch analysis cannot overlap for a video. Both interfaces retain the localhost and input-validation restrictions.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup, checks, and review expectations. Pull requests run formatting, strict TypeScript checks, isolated tests, a production build, dependency auditing, and browser/accessibility checks without provider credentials. Weekly Dependabot updates cover npm dependencies and GitHub Actions.
 
-## Channel API and verification status
+Maintainers can follow [RELEASING.md](RELEASING.md) for verification, backups, GitHub protections, and publication steps.
 
-- `GET /api/channels/search?q=…`, `GET /api/channels`, `GET /api/channels/evidence?ids=…&since=…&until=…`, `POST /api/channels/follow` (`id`, `confirmed:true`).
-- `POST /api/channels/sync`, `/pause`, `/resume` (`source_id`); `GET /api/channels/insights?id=…&since=…&until=…&symbol=…&topic=…`.
-- `GET /api/video?id=…` includes original segments and chunk metadata, while preserving existing passages.
-- `POST /api/chat` accepts `question`, `channelIds` (source IDs), `symbols`, optional `topics`, `since`, `until`, `mode` (`transcript` or `combined`). Existing company-chat payloads remain supported. Expert answers additionally return `coverage` (`discovered`, `indexed`, `missing`, `complete`, `cutoff`, `reviewed`) and `retrieval` (`method`, `candidateCount`, `selectedCount`, `fallbackReason`); older clients can ignore these fields.
-- `POST /api/insights/resume`, `/api/statements/review`, `/api/catalog/refresh`, `/api/catalog/aliases`. Mutations retain localhost/same-origin enforcement and bounded input validation.
+Bug reports and focused pull requests are welcome. Include reproduction steps and relevant checks; use disposable data for tests. Never attach credentials, personal database files, or collected transcripts to an issue or pull request. For a security concern, use the repository's private vulnerability-reporting option if available; do not publish credentials or an exploit containing private data.
 
-The automated suite contains 20 bilingual synthetic retrieval questions and structured quote/action/negation/attribution cases. Passing them is a regression check, **not the requested live 20-question relevance evaluation or human review of 30 real extracted statements**. Those real-data acceptance checks must be completed after channels are collected. Use `tests/expert-research-questions.json` for the 20-question checklist; independently mark answerability and relevant top-ten evidence before calculating the 90% threshold. The accuracy gate stays locked until independent references establish the required sample and threshold. Browser discovery uses mocked identities; server pagination, quota recovery and duplicate protection use deterministic API fixtures. Live YouTube search/backfill requires the missing Data API credential.
-
-## Editorial workspace
-
-Research uses a compact channel pane, a question-led reading workspace, and an evidence reader. Click a channel’s **Insights & timeline** to switch between **Timeline** and **Videos**. Open cited summaries or supporting passages on demand. Stock selection is searchable by symbol, company name, or catalog alias. At wide desktop sizes, citations open beside the answer; narrower screens use a keyboard-accessible side sheet or full-screen dialog.
-
-Sections, research view, channel selection, date/stock/topic filters and profile tabs are reflected in the URL. Saved local preferences apply when URL values are absent. Comparison selections continue to persist separately. Transcripts, reviews and activity lists paginate in groups of 25.
-
-Transcripts uses independent importer/library scrolling on desktop, with a stacked layout on smaller screens. Historical usage records remain in SQLite for compatibility but do not restrict calls or appear in the interface.
-
-## Reliable RAG acceptance
-
-Before release, run the twenty real-data questions in `tests/expert-research-questions.json`. Independently label answerability and the complete evidence required for each question (including earlier/later pairs and different channels); at least eighteen must retrieve that evidence or correctly identify its absence. Separately review at least thirty real source chunks and establish at least ninety percent stock/stance accuracy. Fixture tests do not satisfy either gate. Missing credentials, transcripts, or independent references leave live acceptance pending and verified consensus locked.
-
-Migration `007_reliable_rag.sql` adds checkpoint history versioning, statement extraction version/transcript hash, retrieval indexes and a query-plan cache. It does not delete saved evidence or reviews. Take an online database backup before upgrading; to restore, stop the app and worker, restore into a clean database location without old WAL/SHM files, and set `PSX_DB_PATH` to that location. Restarting the worker automatically resumes six-month collection and sequential reanalysis; provider access failures pause analysis while saved transcripts remain searchable.
+The code is [MIT licensed](LICENSE). PSX, YouTube, and channel content have their own rights and access terms; the code license does not grant permission to redistribute that content. Share the source, not your private research database or someone else's transcripts.

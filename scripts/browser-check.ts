@@ -1,7 +1,6 @@
 import AxeBuilder from "@axe-core/playwright";
 import { chromium, expect } from "@playwright/test";
-import Database from "better-sqlite3";
-import { mkdtempSync, rmSync, existsSync, mkdirSync } from "node:fs";
+import { mkdtempSync, rmSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawn } from "node:child_process";
@@ -21,17 +20,15 @@ db.prepare("UPDATE pipeline_state SET catalog_checked_at=? WHERE id=1").run(
   new Date().toISOString(),
 );
 db.prepare("INSERT INTO watchlist VALUES('MCB')").run();
-const existing = join(process.cwd(), "data", "research.sqlite");
-if (existsSync(existing)) {
-  const source = new Database(existing, { readonly: true });
-  for (const row of source
-    .prepare(
-      "SELECT symbol,payload FROM observations WHERE id IN (SELECT MAX(id) FROM observations GROUP BY symbol)",
-    )
-    .all() as { symbol: string; payload: string }[])
-    saveSnapshot(row.symbol, JSON.parse(row.payload));
-  source.close();
-}
+// Synthetic company data lives only in this disposable browser-test database.
+const { parsePsx } = await import("../lib/sources");
+saveSnapshot(
+  "OGDC",
+  parsePsx(
+    '<title>OGDC - Quote</title><div class="quote__name">Oil &amp; Gas Development Company Limited — synthetic browser fixture, not market data</div><div class="quote__close">Rs.100</div><div id="financials"><div class="tabs__panel" data-name="Annual"><table><thead><tr><th></th><th>2025</th></tr></thead><tbody><tr><td>EPS</td><td>1</td></tr></tbody></table></div></div>',
+    "OGDC",
+  ),
+);
 const fixture = "zztest00001";
 importTranscript({
   url: `https://www.youtube.com/watch?v=${fixture}`,
@@ -68,7 +65,7 @@ importTranscript({
   source_id: 2,
   published_at: "2026-10-02",
   language: "en",
-  text: "1\n00:00:12,000 --> 00:00:17,000\nOGDC is discussed in a browser fixture. Do not buy based on this synthetic fixture.",
+  text: "1\n00:00:12,000 --> 00:00:17,000\nOGDC is discussed in a browser fixture. Do not buy based on this synthetic fixture.\n\n2\n00:00:18,000 --> 00:00:22,000\nOGDC fixture price 100.5; do not buy.",
 });
 const expertChunk = db
   .prepare("SELECT id,text FROM chunks WHERE video_id=?")
@@ -95,7 +92,7 @@ db.prepare(
   new Date().toISOString(),
 );
 db.prepare(
-  "INSERT INTO statements(video_id,chunk_id,quote,stance,rationale,attribution,status,created_at,original_payload,start_seconds,end_seconds,analysis_version,transcript_hash) VALUES(?,?,?,'neutral','Synthetic test fixture','channel','unreviewed',?,?,12,17,?,?)",
+  "INSERT INTO statements(video_id,chunk_id,quote,stance,rationale,attribution,status,created_at,original_payload,start_seconds,end_seconds,analysis_version,transcript_hash) VALUES(?,?,?,'neutral','Synthetic test fixture','channel','unreviewed',?,?,12,22,?,?)",
 ).run(
   expertFixture,
   expertChunk.id,
@@ -192,10 +189,148 @@ try {
     await new Promise((r) => setTimeout(r, 500));
   }
   browser = await chromium.launch({ headless: true });
+  const recoveryContext = await browser.newContext();
+  const recoveryPage = await recoveryContext.newPage();
+  await recoveryPage.route("**/api/state?*", (route) =>
+    route.fulfill({ json: { companies: [], opinions: [], videos: [] } }),
+  );
+  await recoveryPage.goto(origin);
+  await expect(
+    recoveryPage.getByRole("heading", {
+      name: "The workspace could not be displayed",
+    }),
+  ).toBeVisible();
+  await recoveryPage.unroute("**/api/state?*");
+  await recoveryPage.getByRole("button", { name: "Try again" }).click();
+  await expect(
+    recoveryPage.getByRole("heading", { name: "Expert perspectives" }),
+  ).toBeVisible();
+  await recoveryContext.close();
   const context = await browser.newContext({
     viewport: { width: 1440, height: 1050 },
   });
   const page = await context.newPage();
+  // Translation UI fixtures stay inside the disposable test app; no cloud keys are loaded.
+  let translationPosts = 0,
+    failTranslation = false,
+    translationAvailable = true,
+    delayTranslationRead = true;
+  const translationScopes: string[] = [];
+  const translationCache = new Map<
+    string,
+    {
+      segmentId: number;
+      text: string;
+      provider: string;
+      model: string;
+      createdAt: string;
+    }
+  >();
+  const translationJobs = new Map<
+    string,
+    {
+      phase: number;
+      failed: boolean;
+      ids: number[];
+      videoId: string;
+      target: string;
+    }
+  >();
+  await page.route("**/api/translations**", async (route) => {
+    const request = route.request(),
+      query = new URL(request.url()).searchParams;
+    const p =
+      request.method() === "POST"
+        ? (request.postDataJSON() as {
+            videoId: string;
+            target: string;
+            segmentIds?: number[];
+          })
+        : {
+            videoId: query.get("videoId")!,
+            target: query.get("target")!,
+            ...(query.has("segmentIds")
+              ? { segmentIds: query.get("segmentIds")!.split(",").map(Number) }
+              : {}),
+          };
+    const segments = db
+      .prepare(
+        "SELECT id,text FROM caption_segments WHERE video_id=? ORDER BY ordinal",
+      )
+      .all(p.videoId) as { id: number; text: string }[];
+    const ids = segments
+      .filter((s) => !p.segmentIds || p.segmentIds.includes(s.id))
+      .map((s) => s.id);
+    const key = JSON.stringify([p.videoId, p.target, ids]);
+    if (request.method() === "POST") {
+      translationPosts++;
+      translationScopes.push(p.segmentIds ? "passage" : "full");
+      translationJobs.set(key, {
+        phase: 0,
+        failed: failTranslation,
+        ids,
+        videoId: p.videoId,
+        target: p.target,
+      });
+      failTranslation = false;
+      return route.fulfill({
+        status: 202,
+        json: { job: 9000 + translationPosts },
+      });
+    }
+    if (p.segmentIds) translationScopes.push("passage-read");
+    if (delayTranslationRead) {
+      delayTranslationRead = false;
+      await new Promise((resolve) => setTimeout(resolve, 500));
+    }
+    const response = await route.fetch(),
+      data = await response.json(),
+      job = translationJobs.get(key);
+    if (job && !job.failed) {
+      const ready =
+        job.phase === 0 ? [] : job.phase === 1 ? job.ids.slice(0, 1) : job.ids;
+      for (const id of ready) {
+        const original = segments.find((s) => s.id === id)!.text;
+        translationCache.set(`${p.videoId}:${p.target}:${id}`, {
+          segmentId: id,
+          text:
+            p.target === "ur"
+              ? `یہ مصنوعی ترجمہ ہے، خریداری کی سفارش نہیں۔ ${(original.match(/\d+(?:\.\d+)*/g) || []).join(" ")}`
+              : original,
+          provider: "Ollama Cloud",
+          model: "synthetic translation fixture",
+          createdAt: new Date().toISOString(),
+        });
+      }
+    }
+    data.translations = ids
+      .map((id) => translationCache.get(`${p.videoId}:${p.target}:${id}`))
+      .filter(Boolean);
+    data.complete = data.translations.length === ids.length;
+    data.available = translationAvailable;
+    data.workerOnline = translationAvailable;
+    data.unavailableReason = translationAvailable
+      ? null
+      : "Set OLLAMA_API_KEY to generate translations. Saved translations remain readable.";
+    data.job = job
+      ? {
+          id: 9000,
+          status: job.failed
+            ? "failed"
+            : job.phase === 0
+              ? "queued"
+              : job.phase === 1
+                ? "running"
+                : "done",
+          progress: "Synthetic translation progress",
+          error: job.failed
+            ? "Translation fixture failed; saved original preserved"
+            : null,
+        }
+      : null;
+    if (job) job.phase++;
+    await route.fulfill({ response, json: data });
+  });
   const errors: string[] = [];
   const failedResponses: string[] = [];
   page.on("response", (r) => {
@@ -214,7 +349,14 @@ try {
       ),
     ).toEqual([]);
   };
-  await page.goto(origin);
+  const home = await page.goto(origin);
+  expect(home?.headers()["x-content-type-options"]).toBe("nosniff");
+  expect(home?.headers()["x-frame-options"]).toBe("DENY");
+  expect(home?.headers()["referrer-policy"]).toBe("no-referrer");
+  expect((await page.request.get(`${origin}/icon.svg`)).ok()).toBe(true);
+  const missingPage = await page.request.get(`${origin}/missing-release-check`);
+  expect(missingPage.status()).toBe(404);
+  expect(await missingPage.text()).toContain("Open PSX Perspectives");
   await expect(page).toHaveTitle("PSX Perspectives");
   await expect(
     page.getByText("Monthly AI budget", { exact: true }),
@@ -256,7 +398,11 @@ try {
     page.getByRole("heading", { name: "SCS Trade — dated insights" }),
   ).toBeVisible();
   await page.getByRole("button", { name: "Videos", exact: true }).click();
-  await expect(page.getByText("1 accepted statements · 0 quarantined claims", { exact: true })).toBeVisible();
+  await expect(
+    page.getByText("1 accepted statements · 0 quarantined claims", {
+      exact: true,
+    }),
+  ).toBeVisible();
   await page.getByText("Read cited summary", { exact: true }).click();
   await expect(
     page.getByText(
@@ -271,12 +417,112 @@ try {
   await expect(page.getByRole("dialog")).toContainText(
     "User-supplied transcript",
   );
+  const transcript = page
+    .getByRole("dialog")
+    .getByRole("region", { name: "Transcript translation" });
+  await transcript
+    .getByRole("button", { name: "Translate to Urdu", exact: true })
+    .focus();
+  await page.keyboard.press("Enter");
+  await page.keyboard.press("Escape");
+  await expect.poll(() => translationPosts).toBe(1);
+  await page
+    .getByRole("button", { name: "Preview transcript", exact: true })
+    .click();
+  await page
+    .getByRole("dialog")
+    .getByRole("button", { name: "Translate to Urdu", exact: true })
+    .click();
+  expect(translationPosts).toBe(1);
+  await expect(transcript.getByRole("status")).toContainText(
+    "Queued for translation",
+  );
+  await transcript
+    .getByRole("button", { name: "Translate to Urdu", exact: true })
+    .click();
+  expect(translationPosts).toBe(1);
+  await expect(transcript.getByRole("status")).toContainText(
+    "Partially translated",
+    { timeout: 10000 },
+  );
+  await expect(transcript.getByRole("status")).toContainText(
+    "Translation completed",
+    { timeout: 10000 },
+  );
+  await expect(
+    transcript.locator('[lang="ur"][dir="rtl"]').first(),
+  ).toContainText("مصنوعی ترجمہ");
+  await expect(transcript).toContainText(
+    "Do not buy based on this synthetic fixture.",
+  );
+  await assertAccessible();
+  await page.screenshot({
+    path: "data/browser-artifacts/translation-desktop.png",
+    fullPage: false,
+  });
+  await page.setViewportSize({ width: 320, height: 900 });
+  expect(
+    await page.evaluate(
+      () => document.documentElement.scrollWidth <= innerWidth,
+    ),
+  ).toBe(true);
+  await page.screenshot({
+    path: "data/browser-artifacts/translation-mobile.png",
+    fullPage: true,
+  });
+  await page.setViewportSize({ width: 1440, height: 1050 });
+  await page.keyboard.press("Escape");
+  const savedPosts = translationPosts;
+  await page
+    .getByRole("button", { name: "Preview transcript", exact: true })
+    .click();
+  translationAvailable = false;
+  await page
+    .getByRole("dialog")
+    .getByRole("button", { name: "Translate to Urdu", exact: true })
+    .click();
+  await expect(page.getByRole("dialog").getByRole("status")).toContainText(
+    "Translation completed",
+  );
+  expect(translationPosts).toBe(savedPosts);
+  await page
+    .getByRole("dialog")
+    .getByRole("button", { name: "Translate to English", exact: true })
+    .click();
+  await expect(page.getByRole("dialog")).toContainText(
+    "The ingestion worker is offline",
+  );
+  await expect(page.getByRole("dialog")).toContainText("Set OLLAMA_API_KEY");
+  expect(translationPosts).toBe(savedPosts);
+  translationAvailable = true;
   await page.keyboard.press("Escape");
   await page.getByRole("button", { name: "Timeline", exact: true }).click();
   await page
     .getByRole("button", { name: "Review / correct statement" })
     .click();
   await expect(page.getByRole("dialog")).toContainText(expertChunk.text);
+  const reviewDialog = page.getByRole("dialog");
+  await reviewDialog.getByLabel(/^Rationale/).fill("Unsaved review edit");
+  await reviewDialog.getByLabel(/^Stance/).selectOption("bearish");
+  failTranslation = true;
+  await reviewDialog
+    .getByRole("button", { name: "Translate to English", exact: true })
+    .click();
+  await expect(reviewDialog).toContainText("Translation failed.");
+  await reviewDialog
+    .getByRole("button", { name: "Retry translation", exact: true })
+    .click();
+  await expect(reviewDialog.getByRole("status")).toContainText(
+    "Translation completed",
+    { timeout: 15000 },
+  );
+  await expect(reviewDialog.getByLabel(/^Rationale/)).toHaveValue(
+    "Unsaved review edit",
+  );
+  await expect(reviewDialog.getByLabel(/^Stance/)).toHaveValue("bearish");
+  expect(translationScopes).toContain("passage");
+  await reviewDialog.getByLabel(/^Rationale/).fill("Synthetic test fixture");
+  await reviewDialog.getByLabel(/^Stance/).selectOption("neutral");
   await assertAccessible();
   await page.getByRole("button", { name: "Save review", exact: true }).click();
   await expect(page.getByRole("dialog")).toHaveCount(0);
@@ -304,7 +550,9 @@ try {
   await expect(
     page.getByRole("heading", { name: "Retrieved passages" }),
   ).toBeVisible();
-  await expect(page.getByText(/discovered videos.*indexed.*missing transcripts/)).toBeVisible();
+  await expect(
+    page.getByText(/discovered videos.*indexed.*missing transcripts/),
+  ).toBeVisible();
   await expect(
     page
       .locator(".evidence-result")
@@ -323,6 +571,18 @@ try {
       .getByRole("complementary", { name: "Saved evidence" })
       .getByRole("link", { name: "Open original source" }),
   ).toHaveAttribute("href", /t=12s/);
+  const evidenceTranslation = page.getByRole("complementary", {
+    name: "Saved evidence",
+  });
+  const beforeEvidencePosts = translationPosts;
+  await evidenceTranslation
+    .getByRole("button", { name: "Translate to Urdu", exact: true })
+    .click();
+  await expect(evidenceTranslation.getByRole("status")).toContainText(
+    "Translation completed",
+  );
+  expect(translationPosts).toBe(beforeEvidencePosts);
+  expect(translationScopes).toContain("passage-read");
   await assertAccessible();
   await page.screenshot({
     path: "data/browser-artifacts/editorial-evidence.png",
@@ -502,7 +762,7 @@ try {
     .locator(".video")
     .filter({ hasText: "Imported browser test fixture" });
   await imported.getByRole("button", { name: "Preview transcript" }).click();
-  await expect(page.getByRole("dialog")).toContainText("3s");
+  await expect(page.getByRole("dialog")).toContainText("0:03 → 0:06");
   await expect(page.getByRole("dialog")).toContainText(
     "OGDC is discussed for this browser test only.",
   );
@@ -579,7 +839,9 @@ try {
   await page.getByLabel("Filter companies").selectOption("all");
   const download = page.waitForEvent("download");
   await page.getByRole("link", { name: "Export CSV" }).click();
-  await expect((await download).suggestedFilename()).toBe("psx-research.csv");
+  await expect((await download).suggestedFilename()).toBe(
+    "psx-perspectives.csv",
+  );
   const rejected = await page.request.post(`${origin}/api/watchlist`, {
     headers: { origin: "https://evil.example" },
     data: { symbol: "OGDC", watched: true },

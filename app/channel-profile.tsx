@@ -167,11 +167,16 @@ export default function ChannelProfile({
                 : !v.chunk_count
                   ? "Indexing"
                   : v.analysis_status === "done"
-                    ? (v.quarantined_count || 0) > (v.accepted_count || 0) ? "Analysis completed; most claims need review" : "Analysis completed"
+                    ? (v.quarantined_count || 0) > (v.accepted_count || 0)
+                      ? "Analysis completed; most claims need review"
+                      : "Analysis completed"
                     : v.analysis_status || "Indexed; awaiting analysis"}
             </p>
             {v.analysis_status === "done" && (
-              <p>{v.accepted_count || 0} accepted statements · {v.quarantined_count || 0} quarantined claims</p>
+              <p>
+                {v.accepted_count || 0} accepted statements ·{" "}
+                {v.quarantined_count || 0} quarantined claims
+              </p>
             )}
             {v.summary && (
               <details>

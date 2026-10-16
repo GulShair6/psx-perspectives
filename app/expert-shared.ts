@@ -71,8 +71,19 @@ export type Answer = {
   gaps: string[];
   evidence: ExpertEvidence[];
   cutoff: string | null;
-  coverage?: { discovered: number; indexed: number; missing: number; complete: boolean; cutoff: string | null };
-  retrieval?: { method: string; candidateCount: number; selectedCount: number; fallbackReason: string | null };
+  coverage?: {
+    discovered: number;
+    indexed: number;
+    missing: number;
+    complete: boolean;
+    cutoff: string | null;
+  };
+  retrieval?: {
+    method: string;
+    candidateCount: number;
+    selectedCount: number;
+    fallbackReason: string | null;
+  };
 };
 export type Data = {
   channels: Channel[];
@@ -81,7 +92,20 @@ export type Data = {
   catalog: { symbol: string; name: string; aliases: string }[];
 };
 export type Preview = {
-  video: { title: string; url: string; language: string };
+  video: {
+    id: string;
+    content_hash: string;
+    title: string;
+    url: string;
+    language: string;
+  };
+  chunks: {
+    id: number;
+    text: string;
+    start_seconds: number | null;
+    end_seconds: number | null;
+    segmentIds: number[];
+  }[];
   segments: {
     id: number;
     text: string;

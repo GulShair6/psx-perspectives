@@ -1,0 +1,42 @@
+# Preparing a public release
+
+PSX Perspectives ships as a local research application. Publishing its source is separate from hosting a running workspace. The application has no authentication and must remain bound to localhost.
+
+## Verify the candidate
+
+From a clean checkout using Node.js 22.13+:
+
+```sh
+npm ci
+npm run check
+npx playwright install --with-deps chromium
+npm run test:browser
+npm audit --audit-level=high
+```
+
+Inspect the browser screenshots with synthetic data on desktop and mobile. Smoke-test `npm start` against a disposable `PSX_DB_PATH`. Confirm that stopping the launcher stops both web and worker processes, and that saved work survives a restart.
+
+Test upgrades with a backup copy of an older database. Migrations apply automatically; downgrading the code does not undo schema changes. For rollback, stop both processes, restore the pre-upgrade backup to a clean location, and run the matching earlier revision. See [backup and restore](README.md#backup-and-restore).
+
+Live YouTube/PSX/provider checks are separate from deterministic CI. Record which services and credentials were tested. Do not claim complete collection, model accuracy, or investment reliability from synthetic test results. The independent real-corpus evaluation described in [README.md](README.md#limits-and-verification-status) remains a prerequisite for accuracy claims.
+
+## Review what becomes public
+
+- Review the full Git history and release archive for credentials and private material. Ignoring a file today does not remove it from old commits. Rotate any disclosed credential before publishing.
+- Include source, migrations, documentation, and synthetic fixtures. Exclude environment files, databases, backups, collected captions, private review records, build output, and local agent/cloud configuration.
+- Confirm MIT licensing is appropriate for the code being released. Source data and third-party content retain their own rights.
+- Review dependencies and the lockfile. An audit covers known advisories, not every supply-chain risk.
+
+## Configure GitHub
+
+The repository owner should enable these settings before accepting contributions:
+
+- Actions enabled, with **Quality and browser checks** required on the default branch and at least one approving review. Run CI once before selecting the check in branch rules.
+- Branch rules blocking force pushes and deletion of the default branch.
+- Private vulnerability reporting, Dependabot alerts, and secret scanning/push protection where available.
+
+The workflow uses a read-only token, pinned action commits, no provider credentials, and no deployment step. Pull requests from forks run without repository secrets. Dependabot proposes npm and action updates; review and test them before merging.
+
+## Publish deliberately
+
+Review the diff and all release evidence, choose a version, and write release notes describing user-visible changes and remaining limits. Tag the reviewed commit and attach a source release. Changing repository visibility and publishing a tag/release are separate owner actions; local preparation does not perform them.

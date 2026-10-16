@@ -31,7 +31,6 @@ const {
   resumeInsights,
   pipeline,
   reviewStatement,
-  ANALYSIS_VERSION,
   expertResearch,
   scopeCoverage,
 } = await import("../lib/expert");
@@ -70,11 +69,24 @@ const raw = (c: import("../lib/expert").Chunk, quote = c.text) => ({
   hypothetical: false,
 });
 const selected = (c: import("../lib/expert").Chunk, quote = c.text) => {
-  const segments = db.prepare("SELECT s.* FROM caption_segments s JOIN chunk_segments cs ON cs.segment_id=s.id WHERE cs.chunk_id=? ORDER BY s.ordinal").all(c.id) as {id:number;text:string}[];
+  const segments = db
+    .prepare(
+      "SELECT s.* FROM caption_segments s JOIN chunk_segments cs ON cs.segment_id=s.id WHERE cs.chunk_id=? ORDER BY s.ordinal",
+    )
+    .all(c.id) as { id: number; text: string }[];
   const matching = segments.find((s) => s.text === quote);
-  return { ...raw(c, quote), start_segment_id: matching?.id ?? (quote === c.text ? segments[0].id : -1), end_segment_id: matching?.id ?? (quote === c.text ? segments.at(-1)!.id : -1) };
+  return {
+    ...raw(c, quote),
+    start_segment_id: matching?.id ?? (quote === c.text ? segments[0].id : -1),
+    end_segment_id:
+      matching?.id ?? (quote === c.text ? segments.at(-1)!.id : -1),
+  };
 };
-const selectedSummary = (c: import("../lib/expert").Chunk, text: string, quote = c.text) => ({ ...selected(c, quote), text });
+const selectedSummary = (
+  c: import("../lib/expert").Chunk,
+  text: string,
+  quote = c.text,
+) => ({ ...selected(c, quote), text });
 const response = (value: unknown) =>
   Response.json({
     id: "fixture",
@@ -472,7 +484,14 @@ test("automatic analysis quarantines invalid claims individually and caches comp
   globalThis.fetch = async () => {
     calls++;
     return response({
-      summaries: [selectedSummary(c, "FFC has a positive outlook.", "FFC outlook is improving."), { broken: true }],
+      summaries: [
+        selectedSummary(
+          c,
+          "FFC has a positive outlook.",
+          "FFC outlook is improving.",
+        ),
+        { broken: true },
+      ],
       statements: [
         selected(c, "FFC outlook is improving."),
         selected(c, "An invented source quote"),
@@ -631,6 +650,20 @@ test("answer validation rejects unknown citations, unsupported numerical claims 
     gaps: [],
   };
   assert.ok(validateExpertAnswer(base, evidence));
+  assert.throws(
+    () =>
+      validateExpertAnswer(
+        {
+          ...base,
+          whatWasSaid: [
+            { text: "FFC target 200", evidenceIds: ["chunk:1"] },
+            { text: "FFC target 100.5 [chunk:987]", evidenceIds: ["chunk:1"] },
+          ],
+        },
+        evidence,
+      ),
+    /unsupported numbers.*whatWasSaid\[0\]: 200.*whatWasSaid\[1\]: 100\.5, 987/,
+  );
   assert.throws(() =>
     validateExpertAnswer(
       {
@@ -715,14 +748,7 @@ test("provider rejection messages cannot expose the server credential", async ()
   try {
     const { askJson } = await import("../lib/ai");
     await assert.rejects(
-      () =>
-        askJson(
-          "credential test",
-          "Return JSON",
-          {},
-          { type: "object" },
-          (x) => x,
-        ),
+      () => askJson("Return JSON", {}, { type: "object" }, (x) => x),
       (e) =>
         e instanceof Error &&
         !e.message.includes("fixture-super-secret") &&
@@ -777,10 +803,7 @@ test("channel pause stops before another cloud call and resumes without losing c
       db.prepare("UPDATE sources SET enabled=0 WHERE id=2").run();
     const c = chunk("expertt0008");
     return response({
-      summaries:
-        calls === 1
-          ? [selectedSummary(c, "Saved before pause")]
-          : [],
+      summaries: calls === 1 ? [selectedSummary(c, "Saved before pause")] : [],
       statements: [],
     });
   };
@@ -860,14 +883,7 @@ test("successful provider responses containing credentials are discarded before 
   try {
     const { askJson } = await import("../lib/ai");
     await assert.rejects(
-      () =>
-        askJson(
-          "credential response",
-          "Return JSON",
-          {},
-          { type: "object" },
-          (x) => x,
-        ),
+      () => askJson("Return JSON", {}, { type: "object" }, (x) => x),
       /credential data; discarded/,
     );
   } finally {
@@ -883,30 +899,156 @@ test("extraction rejects over-limit arrays without checkpointing or losing sourc
   const c = chunk("expertlimit");
   try {
     for (const output of [
-      { summaries: Array.from({ length: 11 }, () => selectedSummary(c, "Source discussion")), statements: [] },
-      { summaries: [], statements: Array.from({ length: 41 }, () => selected(c)) },
+      {
+        summaries: Array.from({ length: 11 }, () =>
+          selectedSummary(c, "Source discussion"),
+        ),
+        statements: [],
+      },
+      {
+        summaries: [],
+        statements: Array.from({ length: 41 }, () => selected(c)),
+      },
     ]) {
       globalThis.fetch = async () => response(output);
-      await assert.rejects(() => analyzeInsights("expertlimit", () => {}), /Too big/);
-      assert.equal((db.prepare("SELECT COUNT(*) n FROM analysis_checkpoints WHERE video_id='expertlimit'").get() as {n:number}).n, 0);
+      await assert.rejects(
+        () => analyzeInsights("expertlimit", () => {}),
+        /Too big/,
+      );
+      assert.equal(
+        (
+          db
+            .prepare(
+              "SELECT COUNT(*) n FROM analysis_checkpoints WHERE video_id='expertlimit'",
+            )
+            .get() as { n: number }
+        ).n,
+        0,
+      );
       assert.ok(chunk("expertlimit"));
     }
-  } finally { globalThis.fetch = original; delete process.env.OLLAMA_API_KEY; }
+  } finally {
+    globalThis.fetch = original;
+    delete process.env.OLLAMA_API_KEY;
+  }
 });
 
 test("synthesis failure returns scoped saved evidence and coverage without a generated conclusion", async () => {
   const original = globalThis.fetch;
   process.env.OLLAMA_API_KEY = "fixture-synthesis-failure";
-  globalThis.fetch = async () => Response.json({error:{message:"provider unavailable"}}, {status:503});
+  let synthesisAttempts = 0;
+  globalThis.fetch = async (_input, init) => {
+    const instruction = JSON.parse(String(init?.body)).messages[0]
+      .content as string;
+    if (instruction.startsWith("Answer only")) synthesisAttempts++;
+    return Response.json(
+      { error: { message: "provider unavailable" } },
+      { status: 503 },
+    );
+  };
   try {
-    const result = await expertResearch(expertChatSchema.parse({question:"FFC outlook",channelIds:[2],symbols:["FFC"],since:"2026-10-01",until:"2026-10-13"}));
+    const result = await expertResearch(
+      expertChatSchema.parse({
+        question: "FFC outlook",
+        channelIds: [2],
+        symbols: ["FFC"],
+        since: "2026-10-01",
+        until: "2026-10-13",
+      }),
+    );
     assert.ok(result.evidence.length);
-    assert.ok(result.evidence.every(e=>e.channel === "SCS Trade"));
-    assert.equal(result.whatWasSaid.length,0);
+    assert.ok(result.evidence.every((e) => e.channel === "SCS Trade"));
+    assert.equal(result.whatWasSaid.length, 0);
     assert.ok(result.coverage.indexed);
-    assert.match(result.interpretation,/synthesis failed/);
-    assert.match(result.retrieval.fallbackReason||"",/saved evidence/);
-  } finally { globalThis.fetch = original; delete process.env.OLLAMA_API_KEY; }
+    assert.match(result.interpretation, /synthesis failed/);
+    assert.match(result.retrieval.fallbackReason || "", /saved evidence/);
+    assert.equal(synthesisAttempts, 1);
+  } finally {
+    globalThis.fetch = original;
+    delete process.env.OLLAMA_API_KEY;
+  }
+});
+
+test("research corrects one rejected answer and still falls back after a second invalid answer", async () => {
+  fixture("repair00001", "FFC has a cautious outlook without a price target.");
+  const original = globalThis.fetch;
+  const paused = pipeline().analysis_paused;
+  process.env.OLLAMA_API_KEY = "fixture-answer-repair";
+  db.prepare("UPDATE pipeline_state SET analysis_paused=NULL WHERE id=1").run();
+  try {
+    for (const correct of [true, false]) {
+      let attempts = 0;
+      globalThis.fetch = async (_input, init) => {
+        const body = JSON.parse(String(init?.body));
+        const instruction = body.messages[0].content as string;
+        const input = JSON.parse(body.messages[1].content);
+        if (instruction.startsWith("Plan retrieval"))
+          return response({ intent: "stock", symbols: ["FFC"], phrases: [] });
+        if (instruction.startsWith("Rank supplied"))
+          return response({
+            rankings: input.candidates.map((c: { id: number }) => ({
+              id: c.id,
+              relevance: 3,
+            })),
+          });
+        attempts++;
+        if (attempts === 2) {
+          assert.match(
+            input.previousRejectedAnswer.reason,
+            /unsupported numbers/,
+          );
+          assert.match(
+            input.previousRejectedAnswer.answer.whatWasSaid[0].text,
+            /99999999/,
+          );
+        }
+        return response({
+          whatWasSaid: [
+            {
+              text:
+                correct && attempts === 2
+                  ? "The saved caption discusses FFC."
+                  : "FFC target is 99999999.",
+              evidenceIds: [input.evidence[0].id],
+            },
+          ],
+          changes: [],
+          disagreements: [],
+          interpretation: "Read the source context.",
+          gaps: [],
+        });
+      };
+      const result = await expertResearch(
+        expertChatSchema.parse({
+          question: `FFC outlook correction ${correct}`,
+          channelIds: [2],
+          symbols: ["FFC"],
+          since: "2026-10-01",
+          until: "2026-10-13",
+        }),
+      );
+      assert.equal(attempts, 2);
+      assert.ok(result.evidence.length);
+      if (correct) {
+        assert.equal(
+          result.whatWasSaid[0].text,
+          "The saved caption discusses FFC.",
+        );
+        assert.ok(
+          !result.retrieval.fallbackReason?.includes("synthesis failed"),
+        );
+      } else {
+        assert.equal(result.whatWasSaid.length, 0);
+        assert.match(result.interpretation, /synthesis failed/);
+      }
+    }
+  } finally {
+    globalThis.fetch = original;
+    delete process.env.OLLAMA_API_KEY;
+    db.prepare("UPDATE pipeline_state SET analysis_paused=? WHERE id=1").run(
+      paused,
+    );
+  }
 });
 
 test.after(() => {

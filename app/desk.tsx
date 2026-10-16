@@ -1,5 +1,6 @@
 "use client";
 import { useCallback, useEffect, useState } from "react";
+import dynamic from "next/dynamic";
 import {
   BookOpen,
   FileText,
@@ -8,8 +9,9 @@ import {
   Settings2,
 } from "lucide-react";
 import { Modal, PageControls, ReadableError } from "./research-ui";
-import ResearchSettings from "./research-settings";
 import ExpertDesk from "./expert-desk";
+import TranscriptTranslation from "./transcript-translation";
+import type { Preview } from "./expert-shared";
 import { today } from "@/lib/time";
 import type { Company, Opinion, Table, Citation, Evidence } from "@/lib/types";
 type Source = {
@@ -74,7 +76,16 @@ type Answer = {
   citations: Citation[];
   evidence: Evidence[];
 };
-const tabs = ["Research", "Transcripts", "Review", "Activity", "Settings"];
+const ResearchSettings = dynamic(() => import("./research-settings"), {
+  loading: () => <p role="status">Loading settings…</p>,
+});
+const tabs = [
+  { label: "Research", icon: BookOpen },
+  { label: "Transcripts", icon: FileText },
+  { label: "Review", icon: CheckCheck },
+  { label: "Activity", icon: Clock3 },
+  { label: "Settings", icon: Settings2 },
+];
 const fmt = (n: number | null | undefined, d = 2) =>
   n == null ? "—" : n.toLocaleString("en-GB", { maximumFractionDigits: d });
 const date = (s: string | null | undefined) =>
@@ -176,10 +187,13 @@ export default function Desk() {
     [videoSearch, setVideoSearch] = useState("");
   const [videoFilter, setVideoFilter] = useState("all"),
     [sourceFilter, setSourceFilter] = useState("all");
-  const [preview, setPreview] = useState<{
-    video: Video;
-    passages: { id: number; start_seconds: number | null; text: string }[];
-  } | null>(null);
+  const [preview, setPreview] = useState<
+    | (Preview & {
+        video: Preview["video"] & Video;
+        passages: { id: number; start_seconds: number | null; text: string }[];
+      })
+    | null
+  >(null);
   const [evidencePreview, setEvidencePreview] = useState<Evidence | null>(null);
   const [reviewPassage, setReviewPassage] = useState("");
   const [preferencesLoaded, setPreferencesLoaded] = useState(false);
@@ -188,7 +202,7 @@ export default function Desk() {
       const p = JSON.parse(
         localStorage.getItem("psx-desk-preferences") || "{}",
       );
-      if (tabs.includes(p.tab)) setTab(p.tab);
+      if (tabs.some((t) => t.label === p.tab)) setTab(p.tab);
       if (["all", "watchlist", "shariah"].includes(p.filter))
         setFilter(p.filter);
       if (Array.isArray(p.selected))
@@ -213,7 +227,7 @@ export default function Desk() {
     } catch {}
     const q = new URLSearchParams(location.search);
     const section = q.get("section");
-    if (section && tabs.includes(section)) setTab(section);
+    if (section && tabs.some((t) => t.label === section)) setTab(section);
     const research = q.get("research");
     if (research && ["expert", "company"].includes(research))
       setResearchMode(research);
@@ -252,7 +266,7 @@ export default function Desk() {
             ?.text || "Original passage unavailable.",
         );
       })
-      .catch((e) => {
+      .catch(() => {
         if (!controller.signal.aborted)
           setReviewPassage(
             "Could not load the original passage. Close and reopen to retry.",
@@ -425,7 +439,7 @@ export default function Desk() {
           <span className="local">Local</span>
         </div>
         <nav aria-label="Main navigation">
-          {tabs.map((t, i) => (
+          {tabs.map(({ label: t, icon: Icon }) => (
             <button
               key={t}
               className={tab === t ? "nav-item active" : "nav-item"}
@@ -443,16 +457,7 @@ export default function Desk() {
               }}
             >
               <span className="nav-icon" aria-hidden="true">
-                {(() => {
-                  const Icon = [
-                    BookOpen,
-                    FileText,
-                    CheckCheck,
-                    Clock3,
-                    Settings2,
-                  ][i];
-                  return <Icon size={18} />;
-                })()}
+                <Icon size={18} />
               </span>
               {t}
               {t === "Review" && pendingReviews > 0 && (
@@ -2034,23 +2039,16 @@ export default function Desk() {
               <a href={preview.video.url} target="_blank" rel="noreferrer">
                 Open original video
               </a>
-              {!preview.passages.length && (
+              {!preview.segments.length && (
                 <p>
                   Captions are unavailable. Import a transcript to add evidence.
                 </p>
               )}
-              {preview.passages.map((p) => (
-                <article key={p.id}>
-                  <strong>
-                    {p.start_seconds == null
-                      ? "Timestamp not supplied"
-                      : `${p.start_seconds}s`}
-                  </strong>
-                  <p className="passage-text" dir="auto">
-                    {p.text}
-                  </p>
-                </article>
-              ))}
+              <TranscriptTranslation
+                video={preview.video}
+                segments={preview.segments}
+                full
+              />
             </>
           )}
           {evidencePreview && (

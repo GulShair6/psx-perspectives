@@ -22,10 +22,15 @@ export default function ResearchAnswer({
       </p>
       {answer.coverage && (
         <p className="muted">
-          {answer.coverage.discovered} discovered videos · {answer.coverage.indexed} indexed · {answer.coverage.missing} missing transcripts · Discovery {answer.coverage.complete ? "complete" : "incomplete"} for this period
+          {answer.coverage.discovered} discovered videos ·{" "}
+          {answer.coverage.indexed} indexed · {answer.coverage.missing} missing
+          transcripts · Discovery{" "}
+          {answer.coverage.complete ? "complete" : "incomplete"} for this period
         </p>
       )}
-      {answer.retrieval?.fallbackReason && <p className="muted">{answer.retrieval.fallbackReason}</p>}
+      {answer.retrieval?.fallbackReason && (
+        <p className="muted">{answer.retrieval.fallbackReason}</p>
+      )}
       {(
         [
           ["What was said", answer.whatWasSaid],
