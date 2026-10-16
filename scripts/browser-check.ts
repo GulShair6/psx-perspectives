@@ -216,6 +216,21 @@ try {
     translationAvailable = true,
     delayTranslationRead = true;
   const translationScopes: string[] = [];
+  let ollamaPosts = 0;
+  const youtubeCache = new Map<
+    string,
+    {
+      sourceLanguage: string;
+      provenance: string;
+      retrievedAt: string;
+      cues: {
+        id: number;
+        text: string;
+        startSeconds: number;
+        endSeconds: number;
+      }[];
+    }
+  >();
   const translationCache = new Map<
     string,
     {
@@ -244,26 +259,40 @@ try {
         ? (request.postDataJSON() as {
             videoId: string;
             target: string;
+            method?: "youtube" | "ollama";
             segmentIds?: number[];
           })
         : {
             videoId: query.get("videoId")!,
             target: query.get("target")!,
+            method: (query.get("method") || "youtube") as "youtube" | "ollama",
             ...(query.has("segmentIds")
               ? { segmentIds: query.get("segmentIds")!.split(",").map(Number) }
               : {}),
           };
     const segments = db
       .prepare(
-        "SELECT id,text FROM caption_segments WHERE video_id=? ORDER BY ordinal",
+        "SELECT id,text,start_seconds,end_seconds FROM caption_segments WHERE video_id=? ORDER BY ordinal",
       )
-      .all(p.videoId) as { id: number; text: string }[];
+      .all(p.videoId) as {
+      id: number;
+      text: string;
+      start_seconds: number;
+      end_seconds: number;
+    }[];
     const ids = segments
       .filter((s) => !p.segmentIds || p.segmentIds.includes(s.id))
       .map((s) => s.id);
-    const key = JSON.stringify([p.videoId, p.target, ids]);
+    const method = p.method || "youtube";
+    const key = JSON.stringify([
+      p.videoId,
+      p.target,
+      method,
+      ...(method === "youtube" ? [] : [ids]),
+    ]);
     if (request.method() === "POST") {
       translationPosts++;
+      if (method === "ollama") ollamaPosts++;
       translationScopes.push(p.segmentIds ? "passage" : "full");
       translationJobs.set(key, {
         phase: 0,
@@ -286,7 +315,7 @@ try {
     const response = await route.fetch(),
       data = await response.json(),
       job = translationJobs.get(key);
-    if (job && !job.failed) {
+    if (job && !job.failed && method === "ollama") {
       const ready =
         job.phase === 0 ? [] : job.phase === 1 ? job.ids.slice(0, 1) : job.ids;
       for (const id of ready) {
@@ -303,15 +332,44 @@ try {
         });
       }
     }
-    data.translations = ids
+    if (job && !job.failed && method === "youtube" && job.phase >= 2) {
+      youtubeCache.set(key, {
+        sourceLanguage: "hi",
+        provenance: "YouTube auto-translation",
+        retrievedAt: new Date().toISOString(),
+        cues: segments.map((s, i) => ({
+          id: i,
+          startSeconds: s.start_seconds + 0.25,
+          endSeconds: s.end_seconds - 0.25,
+          text:
+            p.target === "ur"
+              ? "یہ مصنوعی ترجمہ ہے، خریداری کی سفارش نہیں۔ 999"
+              : s.text,
+        })),
+      });
+    }
+    data.method = method;
+    data.captionTrack =
+      method === "youtube" ? youtubeCache.get(key) || null : null;
+    data.numberWarning = method === "youtube" && !!data.captionTrack;
+    data.translations = (method === "ollama" ? ids : [])
       .map((id) => translationCache.get(`${p.videoId}:${p.target}:${id}`))
       .filter(Boolean);
-    data.complete = data.translations.length === ids.length;
-    data.available = translationAvailable;
+    data.complete =
+      method === "youtube"
+        ? !!data.captionTrack
+        : data.translations.length === ids.length;
+    const sourceUnavailable =
+      method === "youtube" ? data.unavailableReason : null;
+    data.available = translationAvailable && !sourceUnavailable;
     data.workerOnline = translationAvailable;
-    data.unavailableReason = translationAvailable
-      ? null
-      : "Set OLLAMA_API_KEY to generate translations. Saved translations remain readable.";
+    data.unavailableReason =
+      sourceUnavailable ||
+      (translationAvailable
+        ? null
+        : method === "youtube"
+          ? "YouTube caption retrieval is unavailable in this fixture."
+          : "Set OLLAMA_API_KEY to generate translations. Saved translations remain readable.");
     data.job = job
       ? {
           id: 9000,
@@ -435,18 +493,18 @@ try {
     .click();
   expect(translationPosts).toBe(1);
   await expect(transcript.getByRole("status")).toContainText(
-    "Queued for translation",
+    "Queued for YouTube captions",
   );
   await transcript
     .getByRole("button", { name: "Translate to Urdu", exact: true })
     .click();
   expect(translationPosts).toBe(1);
   await expect(transcript.getByRole("status")).toContainText(
-    "Partially translated",
+    "Retrieving YouTube captions",
     { timeout: 10000 },
   );
   await expect(transcript.getByRole("status")).toContainText(
-    "Translation completed",
+    "YouTube captions ready",
     { timeout: 10000 },
   );
   await expect(
@@ -455,6 +513,10 @@ try {
   await expect(transcript).toContainText(
     "Do not buy based on this synthetic fixture.",
   );
+  await expect(transcript).toContainText("Numbers or their formatting differ");
+  await expect(transcript).toContainText("YouTube auto-translation");
+  await expect(transcript).toContainText("0:12 → 0:16");
+  expect(ollamaPosts).toBe(0);
   await assertAccessible();
   await page.screenshot({
     path: "data/browser-artifacts/translation-desktop.png",
@@ -482,7 +544,7 @@ try {
     .getByRole("button", { name: "Translate to Urdu", exact: true })
     .click();
   await expect(page.getByRole("dialog").getByRole("status")).toContainText(
-    "Translation completed",
+    "YouTube captions ready",
   );
   expect(translationPosts).toBe(savedPosts);
   await page
@@ -492,7 +554,10 @@ try {
   await expect(page.getByRole("dialog")).toContainText(
     "The ingestion worker is offline",
   );
-  await expect(page.getByRole("dialog")).toContainText("Set OLLAMA_API_KEY");
+  await expect(page.getByRole("dialog")).toContainText(
+    "YouTube caption retrieval is unavailable",
+  );
+  expect(ollamaPosts).toBe(0);
   expect(translationPosts).toBe(savedPosts);
   translationAvailable = true;
   await page.keyboard.press("Escape");
@@ -508,7 +573,29 @@ try {
   await reviewDialog
     .getByRole("button", { name: "Translate to English", exact: true })
     .click();
+  await expect(reviewDialog).toContainText("YouTube captions unavailable.");
+  expect(ollamaPosts).toBe(0);
+  await expect(
+    reviewDialog.getByRole("button", {
+      name: "Retry YouTube captions",
+      exact: true,
+    }),
+  ).toBeVisible();
+  failTranslation = true;
+  await reviewDialog
+    .getByRole("button", { name: "Retry YouTube captions", exact: true })
+    .click();
+  await expect(
+    reviewDialog.getByRole("button", { name: "Use Ollama Cloud", exact: true }),
+  ).toBeVisible();
+  expect(ollamaPosts).toBe(0);
+  await expect(reviewDialog).toContainText("uses cloud quota");
+  failTranslation = true;
+  await reviewDialog
+    .getByRole("button", { name: "Use Ollama Cloud", exact: true })
+    .click();
   await expect(reviewDialog).toContainText("Translation failed.");
+  expect(ollamaPosts).toBe(1);
   await reviewDialog
     .getByRole("button", { name: "Retry translation", exact: true })
     .click();
@@ -516,6 +603,21 @@ try {
     "Translation completed",
     { timeout: 15000 },
   );
+  const savedOllamaPosts = ollamaPosts;
+  failTranslation = true;
+  await reviewDialog
+    .getByRole("button", { name: "Translate to English", exact: true })
+    .click();
+  await expect(
+    reviewDialog.getByRole("button", { name: "Use Ollama Cloud", exact: true }),
+  ).toBeVisible();
+  await reviewDialog
+    .getByRole("button", { name: "Use Ollama Cloud", exact: true })
+    .click();
+  await expect(reviewDialog.getByRole("status")).toContainText(
+    "Translation completed",
+  );
+  expect(ollamaPosts).toBe(savedOllamaPosts);
   await expect(reviewDialog.getByLabel(/^Rationale/)).toHaveValue(
     "Unsaved review edit",
   );
@@ -579,7 +681,7 @@ try {
     .getByRole("button", { name: "Translate to Urdu", exact: true })
     .click();
   await expect(evidenceTranslation.getByRole("status")).toContainText(
-    "Translation completed",
+    "YouTube captions ready",
   );
   expect(translationPosts).toBe(beforeEvidencePosts);
   expect(translationScopes).toContain("passage-read");
@@ -737,6 +839,26 @@ try {
   await expect(
     page.getByText("Automatic collection paused").first(),
   ).toBeVisible();
+  const untimedPosts = translationPosts;
+  await page
+    .locator(".video")
+    .filter({ hasText: "Browser test fixture — not real commentary" })
+    .getByRole("button", { name: "Preview transcript", exact: true })
+    .click();
+  await page
+    .getByRole("dialog")
+    .getByRole("button", { name: "Translate to English", exact: true })
+    .click();
+  await expect(page.getByRole("dialog")).toContainText(
+    "untimed source passage",
+  );
+  await expect(
+    page
+      .getByRole("dialog")
+      .getByRole("button", { name: "Use Ollama Cloud", exact: true }),
+  ).toBeVisible();
+  expect(translationPosts).toBe(untimedPosts);
+  await page.keyboard.press("Escape");
   await page
     .getByLabel("Video URL", { exact: true })
     .fill("https://www.youtube.com/watch?v=zztest00002");

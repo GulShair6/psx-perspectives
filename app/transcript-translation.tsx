@@ -16,6 +16,7 @@ export default function TranscriptTranslation({
   const ids = segments.map((s) => s.id).join(",");
   const scope = `${video.id}:${video.content_hash}:${full ? "all" : ids}`;
   const [target, setTarget] = useState<"ur" | "en" | null>(null);
+  const [method, setMethod] = useState<"youtube" | "ollama">("youtube");
   const [result, setResult] = useState<{
     scope: string;
     value: TranslationState;
@@ -25,17 +26,20 @@ export default function TranscriptTranslation({
   const [page, setPage] = useState(0);
   const serial = useRef(0);
   const data =
-    result?.scope === scope && result.value.target === target
+    result?.scope === scope &&
+    result.value.target === target &&
+    result.value.method === method
       ? result.value
       : null;
   const pending =
     !!data?.job &&
     ["queued", "running"].includes(data.job.status) &&
     !data.complete;
-  const query = `translations?videoId=${encodeURIComponent(video.id)}&target=${target || "ur"}${full ? "" : `&segmentIds=${encodeURIComponent(ids)}`}`;
+  const query = `translations?videoId=${encodeURIComponent(video.id)}&target=${target || "ur"}&method=${method}${full ? "" : `&segmentIds=${encodeURIComponent(ids)}`}`;
   useEffect(() => {
     serial.current++;
     setTarget(null);
+    setMethod("youtube");
     setResult(null);
     setError("");
     setBusy(false);
@@ -55,13 +59,17 @@ export default function TranscriptTranslation({
     },
     [scope, video.content_hash],
   );
-  async function translate(language: "ur" | "en") {
+  async function translate(
+    language: "ur" | "en",
+    source: "youtube" | "ollama" = "youtube",
+  ) {
     const request = ++serial.current;
     const current = () => serial.current === request;
     setTarget(language);
+    setMethod(source);
     setBusy(true);
     setError("");
-    const path = `translations?videoId=${encodeURIComponent(video.id)}&target=${language}${full ? "" : `&segmentIds=${encodeURIComponent(ids)}`}`;
+    const path = `translations?videoId=${encodeURIComponent(video.id)}&target=${language}&method=${source}${full ? "" : `&segmentIds=${encodeURIComponent(ids)}`}`;
     try {
       let state = await api<TranslationState>(path);
       accept(state, request);
@@ -73,6 +81,7 @@ export default function TranscriptTranslation({
         await api("translations", {
           videoId: video.id,
           target: language,
+          method: source,
           ...(full ? {} : { segmentIds: segments.map((s) => s.id) }),
         });
         if (!current()) return;
@@ -120,10 +129,24 @@ export default function TranscriptTranslation({
   const cached = new Map(
     data?.translations.map((row) => [row.segmentId, row]) || [],
   );
-  const groups = full
-    ? segments.slice(page * 25, (page + 1) * 25).map((s) => [s])
-    : [segments];
+  const visible = full ? segments.slice(page * 25, (page + 1) * 25) : segments;
+  const youtube = !!target && method === "youtube";
+  const groups = full && !youtube ? visible.map((s) => [s]) : [visible];
+  const visibleCues =
+    data?.captionTrack?.cues.filter((cue) =>
+      visible.some(
+        (s) =>
+          s.start_seconds !== null &&
+          s.end_seconds !== null &&
+          cue.startSeconds < s.end_seconds &&
+          cue.endSeconds > s.start_seconds,
+      ),
+    ) || [];
+  const noVisibleCues =
+    youtube && !!data?.complete && !!visible.length && !visibleCues.length;
   const count = data?.translations.length || 0;
+  const unavailable =
+    !busy && !!(error || noVisibleCues || (data && !data.complete && !pending));
   return (
     <section
       className="transcript-translation"
@@ -153,13 +176,26 @@ export default function TranscriptTranslation({
       </div>
       {target && (
         <>
-          <p className="source-meta">AI translation — not human-reviewed</p>
+          <p className="source-meta">
+            {method === "ollama"
+              ? "Ollama AI translation"
+              : data?.captionTrack?.provenance || "YouTube captions"}{" "}
+            — not independently reviewed
+          </p>
           <p role="status">
             {busy
               ? "Loading saved translation…"
-              : data?.complete
-                ? `Translation completed · ${count}/${data.total} segments`
-                : `${count ? `Partially translated · ${count}/${data?.total} segments. ` : ""}${data?.job?.status === "running" ? "Translating…" : data?.job?.status === "queued" ? "Queued for translation." : data?.job?.status === "failed" ? "Translation failed." : "Translation incomplete."}`}
+              : youtube
+                ? data?.complete
+                  ? "YouTube captions ready · no Ollama quota used"
+                  : pending
+                    ? data?.job?.status === "queued"
+                      ? "Queued for YouTube captions."
+                      : "Retrieving YouTube captions…"
+                    : "YouTube captions unavailable."
+                : data?.complete
+                  ? `Translation completed · ${count}/${data.total} segments`
+                  : `${count ? `Partially translated · ${count}/${data?.total} segments. ` : ""}${data?.job?.status === "running" ? "Translating…" : data?.job?.status === "queued" ? "Queued for translation." : data?.job?.status === "failed" ? "Translation failed." : "Translation incomplete."}`}
           </p>
           {data && !data.complete && !data.workerOnline && (
             <p role="status">
@@ -177,10 +213,35 @@ export default function TranscriptTranslation({
               />
             </div>
           )}
-          {!busy && (error || (data && !data.complete && !pending)) && (
-            <button type="button" onClick={() => void translate(target)}>
-              Retry translation
-            </button>
+          {data?.numberWarning && (
+            <p role="alert">
+              Numbers or their formatting differ from the saved original. Check
+              the original caption or audio before relying on these captions.
+            </p>
+          )}
+          {unavailable &&
+            !noVisibleCues &&
+            (!youtube || data?.available !== false) && (
+              <button
+                type="button"
+                onClick={() => void translate(target, method)}
+              >
+                {youtube ? "Retry YouTube captions" : "Retry translation"}
+              </button>
+            )}
+          {unavailable && youtube && (
+            <div>
+              <p className="source-meta">
+                Ollama Cloud uses cloud quota for missing translations.
+                Previously saved Ollama translations are reused.
+              </p>
+              <button
+                type="button"
+                onClick={() => void translate(target, "ollama")}
+              >
+                Use Ollama Cloud
+              </button>
+            </div>
           )}
         </>
       )}
@@ -198,23 +259,69 @@ export default function TranscriptTranslation({
             <div className="translation-pair">
               <div>
                 <small>Original</small>
-                <p dir="auto">{group.map((s) => s.text).join(" ")}</p>
+                {youtube ? (
+                  group.map((s) => (
+                    <div key={s.id}>
+                      <small>
+                        {stamp(s.start_seconds)} → {stamp(s.end_seconds)}
+                      </small>
+                      <p dir="auto">{s.text}</p>
+                    </div>
+                  ))
+                ) : (
+                  <p dir="auto">{group.map((s) => s.text).join(" ")}</p>
+                )}
               </div>
               {target && (
                 <div lang={target} dir={target === "ur" ? "rtl" : "ltr"}>
                   <small>{target === "ur" ? "Urdu" : "English"}</small>
-                  <p>
-                    {group
-                      .map(
-                        (s) =>
-                          cached.get(s.id)?.text ||
-                          (data?.job?.status === "failed" ||
-                          (!data?.available && data)
-                            ? "[Translation unavailable]"
-                            : "[Translation pending…]"),
-                      )
-                      .join(" ")}
-                  </p>
+                  {youtube ? (
+                    <>
+                      <p className="source-meta">
+                        {data?.captionTrack
+                          ? `Retrieved ${date(data.captionTrack.retrievedAt)} · YouTube cue timestamps`
+                          : ""}
+                      </p>
+                      {visibleCues.map((cue) => (
+                        <div key={cue.id}>
+                          <small>
+                            {stamp(cue.startSeconds)} → {stamp(cue.endSeconds)}
+                          </small>
+                          <p>{cue.text}</p>
+                          <a
+                            href={link(video.url, cue.startSeconds)}
+                            target="_blank"
+                            rel="noreferrer"
+                          >
+                            Open caption timestamp ↗
+                          </a>
+                        </div>
+                      ))}
+                      {data?.captionTrack && !visibleCues.length && (
+                        <p>No YouTube captions overlap this displayed range.</p>
+                      )}
+                      {!data?.captionTrack && (
+                        <p>
+                          {unavailable
+                            ? "[YouTube captions unavailable]"
+                            : "[YouTube captions pending…]"}
+                        </p>
+                      )}
+                    </>
+                  ) : (
+                    <p>
+                      {group
+                        .map(
+                          (s) =>
+                            cached.get(s.id)?.text ||
+                            (data?.job?.status === "failed" ||
+                            (!data?.available && data)
+                              ? "[Translation unavailable]"
+                              : "[Translation pending…]"),
+                        )
+                        .join(" ")}
+                    </p>
+                  )}
                 </div>
               )}
             </div>

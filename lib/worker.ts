@@ -1,7 +1,4 @@
-import {
-  YoutubeTranscript,
-  YoutubeTranscriptTooManyRequestError,
-} from "youtube-transcript";
+import { YoutubeTranscriptTooManyRequestError } from "youtube-transcript";
 import { db, now, saveSnapshot, queue } from "./db";
 import { collectPsx, fetchText, parseFeed } from "./sources";
 import { importTranscript } from "./transcripts";
@@ -14,7 +11,9 @@ import { collectChannel, syncChannel, extendHistory } from "./channels";
 import { sixMonthsAgo } from "./time";
 import { indexVideo, refreshCatalog } from "./knowledge";
 import { analyzeInsights, scheduleInsights, pipeline } from "./expert";
-import { translateJob } from "./translations";
+import { translateJob, youtubeCaptionJob } from "./translations";
+import { captions } from "./youtube-captions";
+export { captions, normalizeCaptions } from "./youtube-captions";
 export const DISCOVERY_INTERVAL = 6 * 60 * 60 * 1000;
 export const CAPTION_RETRY_INTERVAL = 24 * 60 * 60 * 1000;
 
@@ -193,130 +192,6 @@ export function scheduleDiscovery(time = Date.now()) {
   )
     queue("catalog", {});
 }
-export function normalizeCaptions(
-  segments: { text: string; offset: number; duration: number; lang?: string }[],
-  milliseconds: boolean,
-) {
-  return segments.map((s) => ({
-    ...s,
-    offset: s.offset / (milliseconds ? 1000 : 1),
-    duration: s.duration / (milliseconds ? 1000 : 1),
-  }));
-}
-export async function captions(id: string) {
-  let milliseconds = false;
-  let blocked = false;
-  let provenance = "YouTube captions (track provenance unavailable)";
-  let preferred:
-    { baseUrl: string; languageCode: string; kind?: string } | undefined;
-  const segments = await YoutubeTranscript.fetchTranscript(id, {
-    fetch: async (input, init) => {
-      if (blocked) throw new YoutubeTranscriptTooManyRequestError();
-      const u = new URL(
-        typeof input === "string"
-          ? input
-          : input instanceof URL
-            ? input.href
-            : input.url,
-      );
-      if (
-        u.protocol !== "https:" ||
-        u.username ||
-        u.password ||
-        u.port ||
-        !["www.youtube.com", "youtube.com"].includes(u.hostname)
-      )
-        throw new Error("Unsupported caption host");
-      if (preferred && u.pathname.includes("timedtext")) {
-        const selected = new URL(preferred.baseUrl);
-        if (
-          selected.protocol !== "https:" ||
-          !["www.youtube.com", "youtube.com"].includes(selected.hostname) ||
-          selected.port ||
-          selected.username ||
-          selected.password
-        )
-          throw new Error("Unsupported caption track host");
-        input = selected.href;
-      }
-      const response = await fetch(input, {
-        ...init,
-        redirect: "error",
-        signal: AbortSignal.timeout(20_000),
-      });
-      if (response.status === 429 || response.status === 403) {
-        blocked = true;
-        throw new YoutubeTranscriptTooManyRequestError();
-      }
-      let body = await response.text();
-      const marker = '"captionTracks":';
-      const at = body.indexOf(marker);
-      if (at >= 0) {
-        let begin = body.indexOf("[", at + marker.length),
-          end = begin,
-          depth = 0,
-          quoted = false,
-          escaped = false;
-        for (; end < body.length; end++) {
-          const c = body[end];
-          if (escaped) {
-            escaped = false;
-            continue;
-          }
-          if (quoted && c === "\\") {
-            escaped = true;
-            continue;
-          }
-          if (c === '"') {
-            quoted = !quoted;
-            continue;
-          }
-          if (!quoted) {
-            if (c === "[") depth++;
-            if (c === "]" && --depth === 0) break;
-          }
-        }
-        try {
-          const tracks = JSON.parse(body.slice(begin, end + 1)) as {
-            baseUrl: string;
-            languageCode: string;
-            kind?: string;
-          }[];
-          tracks.sort(
-            (a, b) =>
-              Number(a.kind === "asr") - Number(b.kind === "asr") ||
-              Number(!["ur", "en"].includes(a.languageCode)) -
-                Number(!["ur", "en"].includes(b.languageCode)),
-          );
-          preferred = tracks[0];
-          if (preferred)
-            provenance =
-              preferred.kind === "asr"
-                ? "YouTube automatic captions"
-                : "YouTube creator-supplied captions";
-          body =
-            body.slice(0, begin) + JSON.stringify(tracks) + body.slice(end + 1);
-        } catch {
-          /* Metadata unavailable; keep original response. */
-        }
-      }
-      if (Buffer.byteLength(body) > 3_000_000)
-        throw new Error("Caption response exceeds size limit");
-      if (/<p\s+t="\d+"\s+d="\d+"/.test(body)) milliseconds = true;
-      return new Response(body, {
-        status: response.status,
-        headers: response.headers,
-      });
-    },
-  });
-  if (!segments.length)
-    throw new Error("No usable captions; import TXT/SRT/VTT instead");
-  return normalizeCaptions(segments, milliseconds).map((s) => ({
-    ...s,
-    lang: preferred?.languageCode || s.lang,
-    provenance,
-  }));
-}
 export function groupCaptions(segments: { text: string; offset: number }[]) {
   const result: { text: string; offset: number }[] = [];
   for (const segment of segments) {
@@ -455,6 +330,7 @@ export async function runJob(job: {
       .run(text, now(), job.id);
   if (job.type === "catalog") return refreshCatalog();
   if (job.type === "translate") return translateJob(p, progress);
+  if (job.type === "youtube_captions") return youtubeCaptionJob(p, progress);
   if (job.type === "insights") return analyzeInsights(p.id, progress);
   if (job.type === "channel_sync") {
     try {

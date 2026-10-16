@@ -3,12 +3,15 @@ import { z } from "zod";
 import { db, now, queue } from "./db";
 import { aiSettings, askJson } from "./ai";
 import { pauseOnQuota, pipeline } from "./expert";
+import { youtubeCaptions, type CaptionCue } from "./youtube-captions";
 
 export const TRANSLATION_VERSION = "translation-1";
+const YOUTUBE_VERSION = "youtube-captions-1";
 export const translationSchema = z
   .object({
     videoId: z.string().regex(/^[-\w]{11}$/),
     target: z.enum(["ur", "en"]),
+    method: z.enum(["youtube", "ollama"]).default("youtube"),
     segmentIds: z
       .array(z.number().int().positive())
       .min(1)
@@ -20,7 +23,19 @@ export const translationSchema = z
       .optional(),
   })
   .strict();
-type Segment = { id: number; text: string; ordinal: number };
+type Segment = {
+  id: number;
+  text: string;
+  ordinal: number;
+  start_seconds: number | null;
+  end_seconds: number | null;
+};
+type CaptionTrack = {
+  sourceLanguage: string;
+  provenance: string;
+  cues: CaptionCue[];
+  retrievedAt: string;
+};
 type Job = {
   id: number;
   status: string;
@@ -47,7 +62,7 @@ function scope(input: unknown) {
     throw new Error("A saved transcript is required for translation");
   let segments = db
     .prepare(
-      "SELECT id,text,ordinal FROM caption_segments WHERE video_id=? ORDER BY ordinal",
+      "SELECT id,text,ordinal,start_seconds,end_seconds FROM caption_segments WHERE video_id=? ORDER BY ordinal",
     )
     .all(p.videoId) as Segment[];
   if (p.segmentIds) {
@@ -65,8 +80,8 @@ function scope(input: unknown) {
         p.videoId,
         video.content_hash,
         p.target,
-        TRANSLATION_VERSION,
-        segmentIds,
+        p.method === "youtube" ? YOUTUBE_VERSION : TRANSLATION_VERSION,
+        ...(p.method === "youtube" ? [] : [segmentIds]),
       ]),
     )
     .digest("hex");
@@ -99,7 +114,7 @@ function latestJob(key: string): Job | null {
   return (
     (db
       .prepare(
-        "SELECT id,status,progress,error FROM jobs WHERE type='translate' AND json_extract(payload,'$.key')=? ORDER BY id DESC LIMIT 1",
+        "SELECT id,status,progress,error FROM jobs WHERE type IN ('translate','youtube_captions') AND json_extract(payload,'$.key')=? ORDER BY id DESC LIMIT 1",
       )
       .get(key) as Job | undefined) || null
   );
@@ -113,15 +128,41 @@ function unavailableReason() {
 }
 export function getTranslations(input: unknown) {
   const s = scope(input),
-    translations = saved(s),
-    reason = unavailableReason();
+    translations = s.method === "ollama" ? saved(s) : [];
+  const track = s.method === "youtube" ? savedCaptionTrack(s) : null;
+  const cues =
+    track?.cues.filter((cue) =>
+      s.segments.some(
+        (segment) =>
+          segment.start_seconds !== null &&
+          segment.end_seconds !== null &&
+          cue.startSeconds < segment.end_seconds &&
+          cue.endSeconds > segment.start_seconds,
+      ),
+    ) || [];
+  const reason =
+    s.method === "ollama"
+      ? unavailableReason()
+      : untimedReason(s) ||
+        (track && !cues.length
+          ? "YouTube captions do not overlap this saved passage. Use Ollama Cloud to translate the saved text."
+          : null);
   return {
     videoId: s.videoId,
     transcriptHash: s.transcriptHash,
     target: s.target,
+    method: s.method,
     translations,
+    captionTrack: track ? { ...track, cues } : null,
+    numberWarning:
+      !!track &&
+      JSON.stringify(numbers(s.segments.map((row) => row.text).join(" "))) !==
+        JSON.stringify(numbers(cues.map((row) => row.text).join(" "))),
     total: s.segments.length,
-    complete: translations.length === s.segments.length,
+    complete:
+      s.method === "youtube"
+        ? !!track && !reason
+        : translations.length === s.segments.length,
     job: latestJob(s.key),
     available: !reason,
     unavailableReason: reason,
@@ -135,6 +176,23 @@ export function queueTranslation(input: unknown): { job: number | null } {
   return db
     .transaction(() => {
       const s = scope(input);
+      if (s.method === "youtube") {
+        const reason = untimedReason(s);
+        if (reason) throw new Error(reason);
+        if (savedCaptionTrack(s)) return { job: null };
+        const existing = latestJob(s.key);
+        if (existing && ["queued", "running"].includes(existing.status))
+          return { job: existing.id };
+        return {
+          job: queue("youtube_captions", {
+            videoId: s.videoId,
+            target: s.target,
+            transcriptHash: s.transcriptHash,
+            version: YOUTUBE_VERSION,
+            key: s.key,
+          }),
+        };
+      }
       if (saved(s).length === s.segments.length) return { job: null };
       const existing = latestJob(s.key);
       if (existing && ["queued", "running"].includes(existing.status))
@@ -153,6 +211,83 @@ export function queueTranslation(input: unknown): { job: number | null } {
       };
     })
     .immediate();
+}
+
+function untimedReason(s: ReturnType<typeof scope>) {
+  return s.segments.some(
+    (row) =>
+      row.start_seconds === null ||
+      row.end_seconds === null ||
+      row.end_seconds <= row.start_seconds,
+  )
+    ? "YouTube captions cannot be aligned with this untimed source passage. Use Ollama Cloud to translate the saved text."
+    : null;
+}
+function savedCaptionTrack(s: ReturnType<typeof scope>): CaptionTrack | null {
+  const row = db
+    .prepare(
+      "SELECT source_language sourceLanguage,provenance,cues_json,retrieved_at retrievedAt FROM youtube_caption_tracks WHERE video_id=? AND transcript_hash=? AND target=? AND version=?",
+    )
+    .get(s.videoId, s.transcriptHash, s.target, YOUTUBE_VERSION) as
+    | {
+        sourceLanguage: string;
+        provenance: string;
+        cues_json: string;
+        retrievedAt: string;
+      }
+    | undefined;
+  return row
+    ? {
+        sourceLanguage: row.sourceLanguage,
+        provenance: row.provenance,
+        cues: JSON.parse(row.cues_json) as CaptionCue[],
+        retrievedAt: row.retrievedAt,
+      }
+    : null;
+}
+export async function youtubeCaptionJob(
+  input: unknown,
+  progress: (text: string) => void,
+) {
+  const p = translationSchema
+    .pick({ videoId: true, target: true })
+    .extend({
+      transcriptHash: z.string().min(1),
+      version: z.literal(YOUTUBE_VERSION),
+      key: z.string().length(64),
+    })
+    .strict()
+    .parse(input);
+  const s = scope({ videoId: p.videoId, target: p.target });
+  if (s.transcriptHash !== p.transcriptHash || s.key !== p.key)
+    throw new Error(
+      "Transcript changed. Reopen it to request YouTube captions.",
+    );
+  if (savedCaptionTrack(s)) return "YouTube captions already saved";
+  progress("Retrieving YouTube captions; no Ollama quota used");
+  const track = await youtubeCaptions(s.videoId, s.target, s.language);
+  db.transaction(() => {
+    if (
+      scope({ videoId: p.videoId, target: p.target }).transcriptHash !==
+      s.transcriptHash
+    )
+      throw new Error(
+        "Transcript changed while retrieving YouTube captions. Reopen it to retry.",
+      );
+    db.prepare(
+      "INSERT OR IGNORE INTO youtube_caption_tracks(video_id,transcript_hash,target,version,source_language,provenance,cues_json,retrieved_at) VALUES(?,?,?,?,?,?,?,?)",
+    ).run(
+      s.videoId,
+      s.transcriptHash,
+      s.target,
+      YOUTUBE_VERSION,
+      track.sourceLanguage,
+      track.provenance,
+      JSON.stringify(track.cues),
+      now(),
+    );
+  }).immediate();
+  return "YouTube captions saved; no Ollama quota used";
 }
 
 // Split only the translation input; source segments and their timestamps remain immutable.
@@ -230,6 +365,7 @@ export async function translateJob(
     videoId: p.videoId,
     target: p.target,
     segmentIds: p.segmentIds,
+    method: "ollama",
   });
   if (s.transcriptHash !== p.transcriptHash || s.key !== p.key)
     throw new Error(

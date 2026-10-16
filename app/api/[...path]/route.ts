@@ -75,6 +75,7 @@ export async function GET(
         getTranslations({
           videoId: query.get("videoId"),
           target: query.get("target"),
+          ...(query.has("method") ? { method: query.get("method") } : {}),
           ...(query.has("segmentIds")
             ? { segmentIds: query.get("segmentIds")!.split(",").map(Number) }
             : {}),

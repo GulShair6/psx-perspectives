@@ -47,6 +47,7 @@ const response = (value: unknown, finish = "stop") =>
 const input = (videoId: string, segmentIds?: number[]) => ({
   videoId,
   target: "ur",
+  method: "ollama",
   ...(segmentIds ? { segmentIds } : {}),
 });
 async function run(id: number) {
@@ -448,7 +449,7 @@ test("translation API enforces localhost, same-origin JSON and exact source scop
   assert.deepEqual(await cached.json(), { job: null });
   const get = await GET(
     new NextRequest(
-      "http://127.0.0.1:3000/api/translations?videoId=trans000003&target=ur",
+      "http://127.0.0.1:3000/api/translations?videoId=trans000003&target=ur&method=ollama",
       { headers: { host: "127.0.0.1:3000" } },
     ),
     params,
