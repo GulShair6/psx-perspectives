@@ -49,7 +49,7 @@ npm start
 
 Set keys in `.env`, never in source code. On Unix, use `chmod 600 .env`. Restart the app after editing configuration.
 
-- `OLLAMA_API_KEY`: enables expert summaries, extraction, bilingual query planning, relevance ranking, and answers through Ollama Cloud (`gemma4:31b`). Expert research uses this provider only.
+- `OLLAMA_API_KEY`: enables expert summaries, extraction, explicit translation fallback, and answers through Ollama Cloud (`gemma4:31b`). Expert research uses this provider only.
 - `YOUTUBE_DATA_API_KEY`: enables channel search and paginated uploads discovery. Enable YouTube Data API v3 and restrict the server key to that API. Browser-referrer restrictions are unsuitable for this server-side integration.
 - `OPENAI_API_KEY`: optional provider for company research when Ollama is absent; it does not enable expert cloud research.
 - `PSX_DB_PATH`: optional database path; defaults to `data/research.sqlite`.
@@ -72,13 +72,41 @@ Company observations can be included in expert answers through the combined evid
 
 ### Read a translation
 
-Open a transcript, a transcript citation, or **Review / correct statement**, then choose **Translate to Urdu** or **Translate to English**. The full transcript viewer translates the entire saved transcript; citation and review panels translate only their displayed source passage and context. The original remains visible beside the translation, or above it on smaller screens. Original timestamps and video links are retained.
+Open a transcript, a transcript citation, or **Review / correct statement**, then choose **Translate to Urdu** or **Translate to English**. The buttons use saved text and local IndicTrans2 models. No YouTube or cloud translation is requested automatically. The transcript reader prepares its current page first; **Prepare full transcript** explicitly prepares the rest. Citation and review readers translate the relevant source chunks, including surrounding context. Results stay beside the original on desktop and underneath on mobile, with Urdu right-to-left text and source timestamp links. Closing a reader lets queued work continue. Retry resumes only missing blocks.
 
-The language buttons first reuse saved YouTube captions, then retrieve an existing target-language track (creator-supplied before automatic), or request YouTube auto-translation. This uses no Ollama quota or provider key. Retrieval uses the ingestion worker and continues after closing the viewer. YouTube downloads a whole caption track even for a passage request, but the reader displays only cues overlapping the saved passage or current transcript page. Each cue keeps its own timestamp; YouTube cues are not forced into the original segment boundaries. Untimed passages cannot be aligned with YouTube captions.
+Local output is **provisional** until separately compared with audio. Urdu becomes the preferred reading view only after thirty audio-checked passages across at least three channels pass names, units, negation and meaning checks. Numeric tokens must also retain exactly their original notation. These structural checks cannot certify linguistic or financial accuracy. Roman Urdu and Punjabi Shahmukhi are unsupported locally; mixed Indic scripts need correction or explicit fallback. Script detection tolerates Hindi-labelled Urdu/Hindustani; language metadata is a hint, not an absolute restriction.
 
-When YouTube cannot supply usable captions, **Retry YouTube captions** tries again on request. **Use Ollama Cloud** is a separate, explicit choice: it reuses saved Ollama results first and consumes cloud quota only for missing translations. Requested saved caption text, the video title and source-language hint are then sent to Ollama. **Retry translation** resumes missing Ollama segments after failure; quota/authentication failures require restoring the connection and resuming cloud analysis first. There is no automatic fallback to Ollama, bulk translation or audio transcription.
+**Try YouTube captions** is optional and may download a complete target-language track, even for one passage. Creator captions take precedence over automatic captions and auto-translation. YouTube cues keep their own timestamps and are shown only where they overlap the displayed original. Untimed passages cannot be aligned. Number differences are warned about without altering the YouTube text. Blocking responses start a shared persisted twenty-four-hour cooldown across caption ingestion and language requests. Saved text remains readable throughout.
 
-Results identify **YouTube creator-supplied captions**, **YouTube automatic captions**, **YouTube auto-translation**, or **Ollama AI translation** and are not independently reviewed. YouTube results are checked for valid text and ordered timestamps. Differences in numerical tokens or formatting are shown as a warning without correcting or hiding the captions. Ollama retains its stricter protected-number validation. Both caches remain readable without a provider key, and changed transcripts do not reuse stale results. The original source still drives search, answers, citations and review scores; neither caption retrieval nor translation counts as an independent accuracy review. Confirm the original caption or audio before selecting the accuracy-reference checkbox. YouTube tracks can be unavailable or rate-limited, and either provider can mistranslate names, units or meaning.
+**Use Ollama Cloud** is an explicit fallback after a local or YouTube failure. It reuses saved Ollama results before spending quota for missing text. Only this choice sends saved text, title and language hint for cloud translation. Source labels distinguish local output, reused Ollama output, creator captions, automatic captions and YouTube auto-translation. All remain separate from independent accuracy reviews. Confirm the original caption or audio before submitting a review reference.
+
+### Install and evaluate local models
+
+Use Python 3.11 and at least **8 GiB free disk** for setup headroom. The three official [IndicTrans2 distilled models](https://github.com/AI4Bharat/IndicTrans2) require you to accept their Hugging Face access conditions yourself. Configure `HF_TOKEN` locally for the download; never paste it in chat or commit it. Model revisions and direct runtime dependencies are pinned under `local_translation/`; the Python environment and weights stay in ignored `data/local-translation/`.
+
+```sh
+python3.11 local_translation/setup.py
+npm start
+npx tsx scripts/local-translation-check.ts status
+```
+
+The launcher starts the installed runtime using a private Unix socket. It keeps one CPU model loaded, runs inference sequentially with two CPU threads, disables Hugging Face networking/telemetry and outgoing socket connections, and never truncates tokenized input. Long chunks are split at sentence/word boundaries, with bounded splitting when necessary. Missing models or a stopped runtime produce a readable status; cached results still work. Setup downloads are online; inference is offline. Live dependency installation and offline model execution remain unverified until model access and disk space are supplied.
+
+Reading jobs take priority. English preparation for newly saved videos follows, without cloud reanalysis. Archive preparation for enabled channels runs only after independent English quality review, the twenty-question retrieval evaluation (at least eighteen passes), and a same-machine capacity report. Failed background blocks need explicit retry. Archive processing stays gated while any report is missing. The capacity gate requires projected English processing for ten typical videos within eight hours, peak runtime memory under 4 GiB and app responses under one second during inference; these are conservative initial thresholds to verify on this machine.
+
+```sh
+npx tsx scripts/local-translation-check.ts sample
+npx tsx scripts/local-translation-check.ts benchmark
+# Human reviews audio and fills reviews in data/local-translation/trial.json.
+npx tsx scripts/local-translation-check.ts import-reviews
+npx tsx scripts/local-translation-check.ts retrieval
+```
+
+The sample contains thirty real, timestamp-linked passages across channels, prioritizing figures, negation and conditions. A human must confirm genuine Hindi versus Hindi-labelled Urdu, code mixing and names against audio. Each `reviews.ur` / `reviews.en` entry needs `reviewer`, `audioChecked: true`, a `sourceKind` (`hindustani`, `hindi`, `english` or `punjabi`), a `cases` list (`code-mixing`, `company-names`, `financial-figures`, `negation`, `conditional` where present), and boolean `names`, `units`, `negation`, `meaning` fields; do not fill these automatically. Benchmarking saves cold/warm timings, peak memory and projected daily throughput, along with outputs for human review. The retrieval command reuses `tests/expert-research-questions.json`, makes no synthesis calls, and writes original citations to `retrieval-trial.json`; independently label all twenty entries and save the completed report as `retrieval-reviews.json` alongside it. Reports are tied to the model/processing version; translation reviews are also tied to source hashes.
+
+English derived text has a separate SQLite search index linked to original chunks. It never creates independent expert evidence or changes source text, citation timing, extraction checkpoints or review scores. Supported Urdu questions are translated locally and cached; unavailable local translation falls back to literal text and stock aliases. The standard question path uses local ranking, **at most one cloud synthesis request**, and no cloud planner, reranker or answer repair. A rejected answer returns saved evidence. Validated answers are cached against question, filters and evidence/source/review/translation versions. Results show whether a saved answer was reused and how many cloud requests were made.
+
+TXT/SRT/VTT imports remain the caption recovery path. Audio acquisition/transcription, training, translation editing, unofficial free translation websites and additional providers are outside this version.
 
 ## How it works
 

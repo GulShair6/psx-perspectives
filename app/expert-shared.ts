@@ -64,6 +64,7 @@ export type Video = {
 };
 export type Claim = { text: string; evidenceIds: string[] };
 export type Answer = {
+  processing?: { cacheHit: boolean; cloudRequests: number };
   whatWasSaid: Claim[];
   changes: Claim[];
   disagreements: Claim[];

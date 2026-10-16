@@ -259,13 +259,14 @@ try {
         ? (request.postDataJSON() as {
             videoId: string;
             target: string;
-            method?: "youtube" | "ollama";
+            method?: "local" | "youtube" | "ollama";
             segmentIds?: number[];
           })
         : {
             videoId: query.get("videoId")!,
             target: query.get("target")!,
-            method: (query.get("method") || "youtube") as "youtube" | "ollama",
+            method: (query.get("method") || "local") as
+              "local" | "youtube" | "ollama",
             ...(query.has("segmentIds")
               ? { segmentIds: query.get("segmentIds")!.split(",").map(Number) }
               : {}),
@@ -283,7 +284,7 @@ try {
     const ids = segments
       .filter((s) => !p.segmentIds || p.segmentIds.includes(s.id))
       .map((s) => s.id);
-    const method = p.method || "youtube";
+    const method = p.method || "local";
     const key = JSON.stringify([
       p.videoId,
       p.target,
@@ -315,7 +316,7 @@ try {
     const response = await route.fetch(),
       data = await response.json(),
       job = translationJobs.get(key);
-    if (job && !job.failed && method === "ollama") {
+    if (job && !job.failed && method !== "youtube") {
       const ready =
         job.phase === 0 ? [] : job.phase === 1 ? job.ids.slice(0, 1) : job.ids;
       for (const id of ready) {
@@ -352,9 +353,48 @@ try {
     data.captionTrack =
       method === "youtube" ? youtubeCache.get(key) || null : null;
     data.numberWarning = method === "youtube" && !!data.captionTrack;
-    data.translations = (method === "ollama" ? ids : [])
+    data.translations = (method !== "youtube" ? ids : [])
       .map((id) => translationCache.get(`${p.videoId}:${p.target}:${id}`))
       .filter(Boolean);
+    data.blocks =
+      method === "local"
+        ? (
+            db
+              .prepare(
+                "SELECT DISTINCT c.id,c.start_seconds,c.end_seconds FROM chunks c JOIN chunk_segments cs ON cs.chunk_id=c.id WHERE c.video_id=? AND cs.segment_id IN (SELECT value FROM json_each(?))",
+              )
+              .all(p.videoId, JSON.stringify(ids)) as {
+              id: number;
+              start_seconds: number;
+              end_seconds: number;
+            }[]
+          ).flatMap((c) => {
+            const mapped = (
+              db
+                .prepare(
+                  "SELECT segment_id FROM chunk_segments WHERE chunk_id=?",
+                )
+                .all(c.id) as { segment_id: number }[]
+            ).map((r) => r.segment_id);
+            const ready = mapped.map((id) =>
+              translationCache.get(`${p.videoId}:${p.target}:${id}`),
+            );
+            return ready.every(Boolean)
+              ? [
+                  {
+                    chunkId: c.id,
+                    segmentIds: mapped,
+                    text: ready.map((r) => r!.text).join(" "),
+                    provider: "local",
+                    createdAt: new Date().toISOString(),
+                    startSeconds: c.start_seconds,
+                    endSeconds: c.end_seconds,
+                  },
+                ]
+              : [];
+          })
+        : [];
+    data.quality = { validated: false, reviewed: 0, passed: 0, channels: 0 };
     data.complete =
       method === "youtube"
         ? !!data.captionTrack
@@ -369,7 +409,9 @@ try {
         ? null
         : method === "youtube"
           ? "YouTube caption retrieval is unavailable in this fixture."
-          : "Set OLLAMA_API_KEY to generate translations. Saved translations remain readable.");
+          : method === "local"
+            ? "Local runtime is unavailable in this fixture. Saved translations remain readable."
+            : "Set OLLAMA_API_KEY to generate translations. Saved translations remain readable.");
     data.job = job
       ? {
           id: 9000,
@@ -496,18 +538,10 @@ try {
     .click();
   expect(translationPosts).toBe(1);
   await expect(transcript.getByRole("status")).toContainText(
-    "Queued for YouTube captions",
-  );
-  await transcript
-    .getByRole("button", { name: "Translate to Urdu", exact: true })
-    .click();
-  expect(translationPosts).toBe(1);
-  await expect(transcript.getByRole("status")).toContainText(
-    "Retrieving YouTube captions",
-    { timeout: 10000 },
+    /Queued for translation|Translating|Translation completed/,
   );
   await expect(transcript.getByRole("status")).toContainText(
-    "YouTube captions ready",
+    "Translation completed",
     { timeout: 10000 },
   );
   await expect(
@@ -515,6 +549,14 @@ try {
   ).toContainText("مصنوعی ترجمہ");
   await expect(transcript).toContainText(
     "Do not buy based on this synthetic fixture.",
+  );
+  await expect(transcript).toContainText("Provisional translation");
+  await transcript
+    .getByRole("button", { name: "Try YouTube captions", exact: true })
+    .click();
+  await expect(transcript.getByRole("status")).toContainText(
+    "YouTube captions ready",
+    { timeout: 15000 },
   );
   await expect(transcript).toContainText("Numbers or their formatting differ");
   await expect(transcript).toContainText("YouTube auto-translation");
@@ -547,7 +589,7 @@ try {
     .getByRole("button", { name: "Translate to Urdu", exact: true })
     .click();
   await expect(page.getByRole("dialog").getByRole("status")).toContainText(
-    "YouTube captions ready",
+    "Translation completed",
   );
   expect(translationPosts).toBe(savedPosts);
   await page
@@ -558,7 +600,7 @@ try {
     "The ingestion worker is offline",
   );
   await expect(page.getByRole("dialog")).toContainText(
-    "YouTube caption retrieval is unavailable",
+    "Local runtime is unavailable",
   );
   expect(ollamaPosts).toBe(0);
   expect(translationPosts).toBe(savedPosts);
@@ -575,6 +617,11 @@ try {
   failTranslation = true;
   await reviewDialog
     .getByRole("button", { name: "Translate to English", exact: true })
+    .click();
+  await expect(reviewDialog).toContainText("Translation failed.");
+  failTranslation = true;
+  await reviewDialog
+    .getByRole("button", { name: "Try YouTube captions", exact: true })
     .click();
   await expect(reviewDialog).toContainText("YouTube captions unavailable.");
   await expect(reviewDialog).toContainText(
@@ -635,6 +682,9 @@ try {
   failTranslation = true;
   await reviewDialog
     .getByRole("button", { name: "Translate to English", exact: true })
+    .click();
+  await reviewDialog
+    .getByRole("button", { name: "Try YouTube captions", exact: true })
     .click();
   await expect(
     reviewDialog.getByRole("button", { name: "Use Ollama Cloud", exact: true }),
@@ -709,7 +759,7 @@ try {
     .getByRole("button", { name: "Translate to Urdu", exact: true })
     .click();
   await expect(evidenceTranslation.getByRole("status")).toContainText(
-    "YouTube captions ready",
+    "Translation completed",
   );
   expect(translationPosts).toBe(beforeEvidencePosts);
   expect(translationScopes).toContain("passage-read");
@@ -868,6 +918,7 @@ try {
     page.getByText("Automatic collection paused").first(),
   ).toBeVisible();
   const untimedPosts = translationPosts;
+  translationAvailable = false;
   await page
     .locator(".video")
     .filter({ hasText: "Browser test fixture — not real commentary" })
@@ -876,6 +927,10 @@ try {
   await page
     .getByRole("dialog")
     .getByRole("button", { name: "Translate to English", exact: true })
+    .click();
+  await page
+    .getByRole("dialog")
+    .getByRole("button", { name: "Try YouTube captions", exact: true })
     .click();
   await expect(page.getByRole("dialog")).toContainText(
     "untimed source passage",
@@ -886,6 +941,7 @@ try {
       .getByRole("button", { name: "Use Ollama Cloud", exact: true }),
   ).toBeVisible();
   expect(translationPosts).toBe(untimedPosts);
+  translationAvailable = true;
   await page.keyboard.press("Escape");
   await page
     .getByLabel("Video URL", { exact: true })

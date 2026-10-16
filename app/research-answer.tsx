@@ -20,6 +20,14 @@ export default function ResearchAnswer({
         <strong>Evidence cutoff:</strong> {date(answer.cutoff)} · AI-generated,
         not human-reviewed
       </p>
+      {answer.processing && (
+        <p className="muted">
+          {answer.processing.cacheHit
+            ? "Saved answer reused"
+            : "New evidence lookup"}{" "}
+          · {answer.processing.cloudRequests} cloud requests
+        </p>
+      )}
       {answer.coverage && (
         <p className="muted">
           {answer.coverage.discovered} discovered videos ·{" "}
