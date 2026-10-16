@@ -12,3 +12,9 @@ test-results/
 
 preview.png
 *.idea
+.DS_Store
+*.log
+*.pem
+*.key
+.aws/
+.codex/

@@ -66,4 +66,16 @@ test("private environment and SQLite files are ignored and the example contains 
   assert.equal(r.status, 0);
   assert.deepEqual(r.stdout.trim().split("\n"), privateFiles);
   assert.match(readFileSync(".env.example", "utf8"), /^OLLAMA_API_KEY=$/m);
+  const tracked = spawnSync("git", ["ls-files", "-z"], { encoding: "utf8" });
+  assert.equal(tracked.status, 0, tracked.stderr);
+  const privatePaths = tracked.stdout
+    .split("\0")
+    .filter(
+      (path) =>
+        path !== ".env.example" &&
+        /(^|\/)(\.env(?:\.|$)|\.aws\/|data\/)|\.(?:sqlite(?:-wal|-shm)?|pem|key)$/.test(
+          path,
+        ),
+    );
+  assert.deepEqual(privatePaths, [], "Private files must not be tracked");
 });

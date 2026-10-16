@@ -1,8 +1,14 @@
 # PSX Perspectives
 
+[Quick start](#quick-start) · [Contributing](CONTRIBUTING.md) · [Security](SECURITY.md) · [MIT license](LICENSE)
+
 A local research workspace for exploring what YouTube channels say about Pakistan Stock Exchange companies. Ask questions in English, Urdu, or mixed language, compare dated perspectives, and inspect the original transcript behind each citation.
 
 PSX Perspectives keeps expert commentary separate from company fundamentals. It helps you inspect evidence; it does not place trades, predict returns, or certify investment recommendations.
+
+![PSX Perspectives research workspace with followed channels, date filters, and a source-grounded question form](docs/images/workspace.png)
+
+The preview uses synthetic test data. Collected transcripts and personal research are not included in this repository.
 
 ## What you can do
 
@@ -126,6 +132,10 @@ Take a backup before upgrading; migrations run automatically on database initial
 To restore, stop the website and worker, copy the backup to a clean database location, set `PSX_DB_PATH` to it, and restart. Do not replace a running database or reuse stale WAL/SHM files beside a replacement.
 
 ## Contributing and licensing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup, checks, and review expectations. Pull requests run formatting, strict TypeScript checks, isolated tests, a production build, dependency auditing, and browser/accessibility checks without provider credentials. Weekly Dependabot updates cover npm dependencies and GitHub Actions.
+
+Maintainers can follow [RELEASING.md](RELEASING.md) for verification, backups, GitHub protections, and publication steps.
 
 Bug reports and focused pull requests are welcome. Include reproduction steps and relevant checks; use disposable data for tests. Never attach credentials, personal database files, or collected transcripts to an issue or pull request. For a security concern, use the repository's private vulnerability-reporting option if available; do not publish credentials or an exploit containing private data.
 
