@@ -4,21 +4,24 @@ import { dirname, join } from "node:path";
 import type { Company, Snapshot, Opinion } from "./types";
 export const dbPath =
   process.env.PSX_DB_PATH || join(process.cwd(), "data", "research.sqlite");
-mkdirSync(dirname(dbPath), { recursive: true });
-export const db = new Database(dbPath);
-db.pragma("journal_mode = WAL");
+const readonly = process.env.PSX_DB_READONLY === "1";
+if (!readonly) mkdirSync(dirname(dbPath), { recursive: true });
+export const db = new Database(dbPath, { readonly, fileMustExist: readonly });
+if (!readonly) db.pragma("journal_mode = WAL");
 db.pragma("foreign_keys = ON");
 db.pragma("busy_timeout = 5000");
-db.exec("CREATE TABLE IF NOT EXISTS migrations(name TEXT PRIMARY KEY)");
-for (const name of readdirSync(join(process.cwd(), "migrations"))
-  .filter((x) => x.endsWith(".sql"))
-  .sort()) {
-  db.transaction(() => {
-    if (!db.prepare("SELECT 1 FROM migrations WHERE name=?").get(name)) {
-      db.exec(readFileSync(join(process.cwd(), "migrations", name), "utf8"));
-      db.prepare("INSERT INTO migrations VALUES(?)").run(name);
-    }
-  }).immediate();
+if (!readonly) {
+  db.exec("CREATE TABLE IF NOT EXISTS migrations(name TEXT PRIMARY KEY)");
+  for (const name of readdirSync(join(process.cwd(), "migrations"))
+    .filter((x) => x.endsWith(".sql"))
+    .sort()) {
+    db.transaction(() => {
+      if (!db.prepare("SELECT 1 FROM migrations WHERE name=?").get(name)) {
+        db.exec(readFileSync(join(process.cwd(), "migrations", name), "utf8"));
+        db.prepare("INSERT INTO migrations VALUES(?)").run(name);
+      }
+    }).immediate();
+  }
 }
 export const seeds = [
   [
@@ -36,37 +39,38 @@ export const seeds = [
   ["MCB", "MCB Bank", ["Muslim Commercial Bank"]],
   ["SYS", "Systems Limited", ["سسٹمز لمیٹڈ"]],
 ] as const;
-db.transaction(() => {
-  for (const [symbol, name, aliases] of seeds)
-    db.prepare(
-      "INSERT OR IGNORE INTO companies(symbol,name,aliases) VALUES(?,?,?)",
-    ).run(symbol, name, JSON.stringify(aliases));
-  db.exec(
-    "INSERT OR IGNORE INTO stock_catalog(symbol,name,aliases,source_url,verified_at) SELECT symbol,name,aliases,'https://dps.psx.com.pk/screener',validated_at FROM companies",
-  );
-  if (
-    !(db.prepare("SELECT COUNT(*) n FROM sources").get() as { n: number }).n
-  ) {
-    for (const [name, url, channel, kind] of [
-      ["InvestKaar", "https://investkaar.com/youtube", null, "expert"],
-      [
-        "SCS Trade",
-        "https://scstrade.com/MediaGallery.aspx",
-        "UCjL4aKJhoVQNRJK9vHdaWEA",
-        "expert",
-      ],
-      [
-        "Pakistan Stock Exchange",
-        "https://dps.psx.com.pk/",
-        "UC1ilKViIpulidQm5UL6mGTQ",
-        "institutional",
-      ],
-    ])
+if (!readonly)
+  db.transaction(() => {
+    for (const [symbol, name, aliases] of seeds)
       db.prepare(
-        "INSERT INTO sources(name,url,channel_id,kind) VALUES(?,?,?,?)",
-      ).run(name, url, channel, kind);
-  }
-}).immediate();
+        "INSERT OR IGNORE INTO companies(symbol,name,aliases) VALUES(?,?,?)",
+      ).run(symbol, name, JSON.stringify(aliases));
+    db.exec(
+      "INSERT OR IGNORE INTO stock_catalog(symbol,name,aliases,source_url,verified_at) SELECT symbol,name,aliases,'https://dps.psx.com.pk/screener',validated_at FROM companies",
+    );
+    if (
+      !(db.prepare("SELECT COUNT(*) n FROM sources").get() as { n: number }).n
+    ) {
+      for (const [name, url, channel, kind] of [
+        ["InvestKaar", "https://investkaar.com/youtube", null, "expert"],
+        [
+          "SCS Trade",
+          "https://scstrade.com/MediaGallery.aspx",
+          "UCjL4aKJhoVQNRJK9vHdaWEA",
+          "expert",
+        ],
+        [
+          "Pakistan Stock Exchange",
+          "https://dps.psx.com.pk/",
+          "UC1ilKViIpulidQm5UL6mGTQ",
+          "institutional",
+        ],
+      ])
+        db.prepare(
+          "INSERT INTO sources(name,url,channel_id,kind) VALUES(?,?,?,?)",
+        ).run(name, url, channel, kind);
+    }
+  }).immediate();
 export const now = () => new Date().toISOString();
 export function companies(): Company[] {
   const rows = db
@@ -107,12 +111,79 @@ export function opinions(): Opinion[] {
     )
     .all() as Opinion[];
 }
-export function gate() {
-  const r = db
+export function reviewEvidence() {
+  const rows = db
     .prepare(
-      "SELECT COUNT(*) reviewed,COALESCE(SUM(correct),0) correct FROM (SELECT o.passage_id,MIN(e.correct) correct FROM evaluations e JOIN opinions o ON o.id=e.opinion_id GROUP BY o.passage_id UNION ALL SELECT 'statement:'||st.chunk_id,MIN(e.correct) correct FROM statement_evaluations e JOIN statements st ON st.id=e.statement_id GROUP BY st.chunk_id)",
+      "SELECT 'passage:'||p.id reference,p.video_id,p.text,p.start_seconds,MIN(e.correct) correct FROM evaluations e JOIN opinions o ON o.id=e.opinion_id JOIN passages p ON p.id=o.passage_id GROUP BY p.id UNION ALL SELECT 'chunk:'||c.id,c.video_id,c.text,c.start_seconds,MIN(e.correct) FROM statement_evaluations e JOIN statements st ON st.id=e.statement_id JOIN chunks c ON c.id=st.chunk_id AND c.video_id=st.video_id GROUP BY c.id",
     )
-    .get() as { reviewed: number; correct: number };
+    .all() as {
+    reference: string;
+    video_id: string;
+    text: string;
+    start_seconds: number | null;
+    correct: number;
+  }[];
+  const unresolved: string[] = [];
+  const groups: { segments: Set<number>; correct: number }[] = [];
+  for (const videoId of new Set(rows.map((r) => r.video_id))) {
+    const segments = db
+      .prepare(
+        "SELECT id,text,start_seconds FROM caption_segments WHERE video_id=? ORDER BY ordinal",
+      )
+      .all(videoId) as {
+      id: number;
+      text: string;
+      start_seconds: number | null;
+    }[];
+    let offset = 0;
+    const spans = segments.map((s) => {
+      const span = { ...s, start: offset, end: offset + s.text.length };
+      offset = span.end + 1;
+      return span;
+    });
+    const source = segments.map((s) => s.text).join(" ");
+    for (const row of rows.filter((r) => r.video_id === videoId)) {
+      const matches: number[][] = [];
+      for (
+        let start = source.indexOf(row.text);
+        row.text && start >= 0;
+        start = source.indexOf(row.text, start + 1)
+      ) {
+        const selected = spans.filter(
+          (s) => s.start < start + row.text.length && s.end > start,
+        );
+        if (
+          selected.length &&
+          (row.start_seconds === null ||
+            selected[0].start_seconds === row.start_seconds)
+        )
+          matches.push(selected.map((s) => s.id));
+      }
+      if (matches.length !== 1) {
+        unresolved.push(row.reference);
+        continue;
+      }
+      const group = { segments: new Set(matches[0]), correct: row.correct };
+      // Merge transitively: overlapping chunks are never independent review evidence.
+      for (let i = groups.length - 1; i >= 0; i--) {
+        if (![...groups[i].segments].some((id) => group.segments.has(id)))
+          continue;
+        for (const id of groups[i].segments) group.segments.add(id);
+        group.correct = Math.min(group.correct, groups[i].correct);
+        groups.splice(i, 1);
+      }
+      groups.push(group);
+    }
+  }
+  return {
+    reviewed: groups.length,
+    correct: groups.reduce((n, g) => n + g.correct, 0),
+    unresolved,
+  };
+}
+export function gate() {
+  const { reviewed, correct } = reviewEvidence();
+  const r = { reviewed, correct };
   return {
     ...r,
     accuracy: r.reviewed ? r.correct / r.reviewed : 0,

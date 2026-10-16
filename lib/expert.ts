@@ -1,3 +1,4 @@
+import { numericalTokens } from "./numbers";
 import { createHash } from "node:crypto";
 import { englishQuestion } from "./local-translations";
 import { LOCAL_REVISION, LOCAL_VERSION } from "./local-runtime";
@@ -134,20 +135,15 @@ const jsonAnalysis = {
   required: ["summaries", "statements"],
 };
 const actions = {
-  buy: /\bbuy(?:ing)?\b|خرید/iu,
-  sell: /\bsell(?:ing)?\b|فروخت|بیچ/iu,
-  hold: /\bhold(?:ing)?\b|رکھ/iu,
-  watch: /\bwatch\b|نظر|نگاہ/iu,
-  avoid: /\bavoid\b|گریز|بچ/iu,
+  buy: /\bbuy(?:ing)?\b|خرید|खरीद|ख़रीद/iu,
+  sell: /\bsell(?:ing)?\b|فروخت|بیچ|बेच|बिक्री/iu,
+  hold: /\bhold(?:ing)?\b|رکھ|होल्ड|रख/iu,
+  watch: /\bwatch\b|نظر|نگاہ|नज़र|नजर|निगाह|देख/iu,
+  avoid: /\bavoid\b|گریز|بچ|बच|परहेज़|परहेज/iu,
 };
 function unsupportedNumbers(text: string, evidence: string) {
-  return (text.match(/\p{Nd}+(?:[.,]\p{Nd}+)*/gu) || []).filter(
-    (n) =>
-      !new RegExp(
-        `(?<![\\p{Nd}.])${n.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?![\\p{Nd}.])`,
-        "u",
-      ).test(evidence),
-  );
+  const supported = new Set(numericalTokens(evidence));
+  return numericalTokens(text).filter((n) => !supported.has(n));
 }
 export function validateStatement(raw: unknown, chunks: Chunk[]) {
   const s = statementSchema.parse(raw),
@@ -172,7 +168,9 @@ export function validateStatement(raw: unknown, chunks: Chunk[]) {
       new RegExp(
         `(?:نہ|مت|نہیں).{0,12}${verbs[s.action]}|${verbs[s.action]}.{0,15}نہیں`,
         "u",
-      ).test(s.quote);
+      ).test(s.quote) ||
+      // Mixed-language negation is ambiguous even when another clause contains an action.
+      /(?:^|[^\p{L}\p{M}])(?:नहीं|नही|मत|न)(?=$|[^\p{L}\p{M}])/u.test(s.quote);
     if (!actions[s.action].test(s.quote) || negated)
       throw new Error("Action is absent or negated; requires correction");
   }
@@ -795,7 +793,7 @@ export async function expertResearch(p: ExpertRequest) {
   const cacheKey = createHash("sha256")
     .update(
       JSON.stringify({
-        version: "answer-local-1",
+        version: "answer-local-2",
         question: normalize(p.question),
         channels: [...p.channelIds].sort((a, b) => a - b),
         symbols: [...p.symbols].sort(),
@@ -808,19 +806,21 @@ export async function expertResearch(p: ExpertRequest) {
         translation: [LOCAL_REVISION, LOCAL_VERSION],
         sources: db
           .prepare(
-            "SELECT id,content_hash FROM videos WHERE source_id IN (SELECT value FROM json_each(?)) ORDER BY id",
+            "SELECT id,content_hash FROM videos WHERE id IN (SELECT value FROM json_each(?)) ORDER BY id",
           )
-          .all(JSON.stringify(p.channelIds)),
+          .all(JSON.stringify(evidence.map((e) => e.video_id).filter(Boolean))),
         reviews: db
           .prepare(
-            "SELECT e.* FROM statement_evaluations e JOIN statements st ON st.id=e.statement_id JOIN videos v ON v.id=st.video_id WHERE v.source_id IN (SELECT value FROM json_each(?)) ORDER BY e.statement_id",
+            "SELECT e.* FROM statement_evaluations e JOIN statements st ON st.id=e.statement_id WHERE st.video_id IN (SELECT value FROM json_each(?)) AND st.chunk_id IN (SELECT value FROM json_each(?)) ORDER BY e.statement_id",
           )
-          .all(JSON.stringify(p.channelIds)),
-        translations: db
-          .prepare(
-            "SELECT b.chunk_id,b.source_hash,b.text,b.target,b.revision,b.version FROM local_translation_blocks b JOIN chunks c ON c.id=b.chunk_id JOIN videos v ON v.id=c.video_id WHERE v.source_id IN (SELECT value FROM json_each(?)) ORDER BY b.chunk_id,b.target,b.revision,b.version",
-          )
-          .all(JSON.stringify(p.channelIds)),
+          .all(
+            JSON.stringify(evidence.map((e) => e.video_id).filter(Boolean)),
+            JSON.stringify(
+              evidence
+                .filter((e) => e.id.startsWith("chunk:"))
+                .map((e) => Number(e.id.split(":")[1])),
+            ),
+          ),
       }),
     )
     .digest("hex");

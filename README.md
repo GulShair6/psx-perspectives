@@ -112,7 +112,7 @@ TXT/SRT/VTT imports remain the caption recovery path. Audio acquisition/transcri
 
 The Next.js/React interface talks to a localhost-only API. SQLite stores original caption segments, searchable chunks, company snapshots, review decisions, and resumable job checkpoints. A sequential worker discovers videos, retrieves available captions, indexes transcripts, and queues cloud analysis.
 
-Retrieval scopes SQLite full-text search and stock/topic relationships to your filters before ranking. It combines deterministic retrieval with optional cached bilingual planning and bounded cloud reranking. Selected evidence feeds a structured answer whose quotations, numbers, and citations are validated. A rejected synthesis can receive one correction attempt using the same evidence and validation rules. If correction fails, the app returns evidence and gaps instead of an unsupported conclusion.
+Retrieval scopes SQLite full-text search and stock/topic relationships to your filters before deterministic ranking. Local English translations extend search when available. Selected original evidence feeds at most one cloud synthesis request; there is no cloud planner, reranker or correction request. Invalid synthesis returns saved evidence and an explanation. Urdu reading preparation does not invalidate an unchanged saved answer.
 
 This is lexical and structured retrieval, without embeddings, a vector database, or GraphRAG. The broader stock-symbol catalog is separate from the ten-company fundamentals dashboard.
 
@@ -132,6 +132,7 @@ The source is organized into `app/` (interface and API), `lib/` (collection, ret
 ```sh
 npm test
 npm run typecheck
+python3 -m unittest discover -s local_translation -p 'test_*.py'
 npm run build
 npx playwright install chromium
 npm run test:browser
@@ -140,6 +141,18 @@ npm run test:browser
 The automated suites cover parsers, calendar boundaries, resumable collection, source identity, scoped retrieval, extraction validation, review preservation, provider failures, credential redaction, and request validation. Browser checks launch an isolated production server/worker and exercise research, evidence, imports, reviews, watchlists, comparison, settings, exports, connection recovery, keyboard interactions, accessibility, and responsive layouts. Synthetic browser fixtures are labeled and never added to your database.
 
 Browser checks require a completed build. Screenshots are saved under ignored `data/browser-artifacts/`. Tests validate implementation behavior; they do not guarantee live source availability or financial/model accuracy.
+
+## Evidence repairs and runtime recovery
+
+Preview saved-record repairs with `npm run repair -- --preview`. The preview opens SQLite read-only and writes a private report under `data/repairs/`; it does not run migrations or contact a provider. Stop the app and worker, then run `npm run repair -- --apply` to create a consistent SQLite backup, save the proposed changes and apply them transactionally. Use `--report /absolute/path/report.json` to choose the report location. Completed reports and unrelated files cannot be overwritten; choose a new report filename for each apply. Repeating the command makes no further record changes.
+
+Repairs quarantine invalid automatic statements and pending legacy opinions, retaining their payloads and reasons. Human-reviewed or rejected records and independent labels remain unchanged; conflicts and unresolved source mappings appear in the report. Review counts combine both review systems by original caption segments, counting overlapping source spans once and taking their lowest correctness result. Ambiguous source mappings do not count toward the accuracy gate.
+
+Corrupted imports can be rebuilt only when a retained import job contains the exact original file text and the video has no human decisions, including translation reviews. Replaced records are archived in the report and backup. Missing raw input requires the original TXT/SRT/VTT file; the repair never guesses missing words or figures. Repaired sources receive a new hash and a failed analysis marker requiring explicit resume; repair itself makes no cloud requests or automatic reanalysis jobs.
+
+Processing version `local-2` isolates token-length probes from entity restoration. Earlier local translations and reviews remain stored but cannot satisfy current reading/search or quality gates. The English derived index is cleared by the additive upgrade and filled only by current validated results. Model revisions are unchanged. Live model inference, financial-language accuracy and throughput remain pending; Urdu stays provisional and archive preparation remains gated.
+
+A restarting worker waits up to 35 seconds for the previous lease to expire. A healthy local runtime publishes a private readiness heartbeat even while inference is busy. A dead process or expired heartbeat is unavailable; saved translations remain readable and no cloud fallback happens automatically. Restart the app to restart its optional local runtime.
 
 `npm run proof` is an optional live PSX/feed/caption smoke check. `npm run refresh` retrieves official observations and updates your database. Both depend on external services and are separate from deterministic tests.
 

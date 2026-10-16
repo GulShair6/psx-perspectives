@@ -176,7 +176,7 @@ test("alias boundaries and negated evidence survive extraction without keyword b
     symbol: "OGDC",
     stance: "bearish",
     rationale: "Explicitly not buying at this valuation",
-    quote: "I would not buy it at this valuation.",
+    quote: "OGDC: I would not buy it at this valuation.",
     target: null,
     horizon: null,
     hypothetical: false,
@@ -254,10 +254,13 @@ test("review correction updates research evidence and evaluation without changin
 });
 test("gate requires 30 independent evaluated extractions and at least 90% accuracy", () => {
   for (let i = 0; i < 29; i++) {
+    db.prepare(
+      "INSERT INTO caption_segments(video_id,ordinal,text,language,provenance,retrieved_at) VALUES('abcdefghijk',?,?,'en','test',?)",
+    ).run(i + 1, `Independent test passage ${i}.`, now());
     const passageId = Number(
       db
         .prepare("INSERT INTO passages(video_id,text) VALUES(?,?)")
-        .run("abcdefghijk", `Independent test passage ${i}`).lastInsertRowid,
+        .run("abcdefghijk", `Independent test passage ${i}.`).lastInsertRowid,
     );
     const id = Number(
       db

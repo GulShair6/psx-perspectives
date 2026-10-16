@@ -43,6 +43,7 @@ export function localScope(
   videoId: string,
   target: "ur" | "en",
   segmentIds: number[],
+  queuedChunks?: number[],
 ) {
   const video = db
     .prepare("SELECT content_hash,language FROM videos WHERE id=?")
@@ -58,12 +59,18 @@ export function localScope(
     )
     .all(videoId) as { chunk_id: number; segment_id: number }[];
   const selected = new Set(segmentIds);
+  if (queuedChunks?.some((id) => !rows.some((b) => b.id === id)))
+    throw new Error(
+      "Queued chunks do not belong to this saved video; request a fresh translation.",
+    );
   if (segmentIds.some((id) => !mappings.some((m) => m.segment_id === id)))
     throw new Error(
       "Source segments lack chunk mappings; reopen the saved transcript after indexing",
     );
   const blocks = rows.filter((b) =>
-    mappings.some((m) => m.chunk_id === b.id && selected.has(m.segment_id)),
+    queuedChunks
+      ? queuedChunks.includes(b.id)
+      : mappings.some((m) => m.chunk_id === b.id && selected.has(m.segment_id)),
   );
   return {
     videoId,
@@ -264,17 +271,13 @@ export async function localTranslationJob(
   progress: (s: string) => void,
   translate: typeof inferLocal = inferLocal,
 ) {
-  const p = jobSchema.parse(input);
-  const mappings = db
-    .prepare(
-      "SELECT cs.segment_id FROM chunk_segments cs JOIN chunks c ON c.id=cs.chunk_id WHERE c.video_id=? AND c.id IN (SELECT value FROM json_each(?))",
-    )
-    .all(p.videoId, JSON.stringify(p.chunkIds)) as { segment_id: number }[];
-  const s = localScope(
-    p.videoId,
-    p.target,
-    mappings.map((m) => m.segment_id),
-  );
+  const parsed = jobSchema.safeParse(input);
+  if (!parsed.success)
+    throw new Error(
+      "Translation job is obsolete or invalid. Reopen the reader to request a fresh translation.",
+    );
+  const p = parsed.data;
+  const s = localScope(p.videoId, p.target, [], p.chunkIds);
   if (
     s.transcriptHash !== p.transcriptHash ||
     s.key !== p.key ||
@@ -283,9 +286,24 @@ export async function localTranslationJob(
     throw new Error(
       "Transcript or model version changed. Reopen the reader to request a fresh translation.",
     );
-  const done = new Set(cached(s, false).map((b) => b.chunkId));
+  const saved = cached(s, false);
+  const done = new Set(saved.map((b) => b.chunkId));
   for (const block of s.blocks) {
-    if (done.has(block.id)) continue;
+    if (done.has(block.id)) {
+      if (
+        s.target === "en" &&
+        !db
+          .prepare("SELECT 1 FROM english_translation_search WHERE rowid=?")
+          .get(block.id)
+      )
+        db.prepare(
+          "INSERT INTO english_translation_search(rowid,text) VALUES(?,?)",
+        ).run(
+          block.id,
+          normalize(saved.find((b) => b.chunkId === block.id)!.text),
+        );
+      continue;
+    }
     const ids = s.mappings
       .filter((m) => m.chunk_id === block.id)
       .map((m) => m.segment_id);

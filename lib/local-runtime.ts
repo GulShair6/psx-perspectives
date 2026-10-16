@@ -1,11 +1,12 @@
+import { numericalTokens } from "./numbers";
 import { createHash } from "node:crypto";
-import { existsSync, readFileSync } from "node:fs";
+import { readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { createConnection } from "node:net";
 import { z } from "zod";
 import models from "../local_translation/models.json";
 
-export const LOCAL_VERSION = "local-1";
+export const LOCAL_VERSION = "local-2";
 export const LOCAL_REVISION = createHash("sha256")
   .update(JSON.stringify(models))
   .digest("hex");
@@ -21,18 +22,35 @@ export function localReadiness() {
     );
     if (JSON.stringify(installed) !== JSON.stringify(models))
       throw new Error("Pinned model revisions differ");
-    if (!existsSync(join(localDirectory, "runtime.sock")))
-      return {
-        ready: false,
-        reason:
-          "Local translation runtime is stopped. Start the local Python runtime; saved translations remain readable.",
-      };
-    return { ready: true, reason: null };
   } catch {
     return {
       ready: false,
       reason:
         "Local models are not installed. Run the local translation setup after freeing 8 GiB and granting model access. No cloud translation was requested.",
+    };
+  }
+  try {
+    const state = JSON.parse(
+      readFileSync(join(localDirectory, "runtime.json"), "utf8"),
+    );
+    if (
+      !Number.isSafeInteger(state.pid) ||
+      state.pid <= 0 ||
+      !state.owner ||
+      state.version !== LOCAL_VERSION ||
+      !Number.isFinite(state.heartbeat) ||
+      Date.now() - state.heartbeat > 30_000 ||
+      state.heartbeat > Date.now() + 5_000 ||
+      !statSync(join(localDirectory, "runtime.sock")).isSocket()
+    )
+      throw new Error("Stale runtime");
+    process.kill(state.pid, 0);
+    return { ready: true, reason: null };
+  } catch {
+    return {
+      ready: false,
+      reason:
+        "Local translation runtime is stopped or unresponsive. Restart it; saved translations remain readable. No cloud translation was requested.",
     };
   }
 }
@@ -61,8 +79,7 @@ export function sourceLanguage(text: string, hint: string) {
   );
 }
 export type LocalBlock = { id: number; text: string };
-const numeric = (text: string) =>
-  (text.match(/[+\-−]?\p{Nd}+(?:[.,]\p{Nd}+)*(?:[%٪])?/gu) || []).sort();
+const numeric = (text: string) => numericalTokens(text).sort();
 export function validateLocalBlocks(input: LocalBlock[], raw: unknown) {
   const out = z
     .array(

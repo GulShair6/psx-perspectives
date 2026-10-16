@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, writeFileSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { createServer } from "node:net";
 const temp = mkdtempSync(join(tmpdir(), "psx-local-"));
 process.env.PSX_DB_PATH = join(temp, "research.sqlite");
 process.env.PSX_LOCAL_TRANSLATION_DIR = temp;
@@ -11,7 +12,21 @@ writeFileSync(
   join(temp, "installed.json"),
   readFileSync("local_translation/models.json"),
 );
-writeFileSync(join(temp, "runtime.sock"), "");
+let runtime = createServer();
+await new Promise<void>((resolve) =>
+  runtime.listen(join(temp, "runtime.sock"), resolve),
+);
+const ready = () =>
+  writeFileSync(
+    join(temp, "runtime.json"),
+    JSON.stringify({
+      pid: process.pid,
+      owner: "fixture",
+      version: "local-2",
+      heartbeat: Date.now(),
+    }),
+  );
+ready();
 const { db, gate } = await import("../lib/db");
 const { importTranscript } = await import("../lib/transcripts");
 const { getTranslations, queueTranslation } =
@@ -52,9 +67,67 @@ const p = (id: string, ids?: number[]) => ({
   target: "en",
   ...(ids ? { segmentIds: ids } : {}),
 });
-test.after(() => {
+test.after(async () => {
+  await new Promise<void>((resolve) => runtime.close(() => resolve()));
   db.close();
   rmSync(temp, { recursive: true, force: true });
+});
+test("a passage job keeps its queued chunk scope despite overlapping neighbours", async () => {
+  const text = Array.from(
+    { length: 12 },
+    (_, i) =>
+      `${i + 1}\n00:${String(i).padStart(2, "0")}.000 --> 00:${String(i + 1).padStart(2, "0")}.000\nखरीदो मत ${i} ${"उदाहरण ".repeat(80)}`,
+  ).join("\n\n");
+  const ids = fixture("localover01", text);
+  const id = queueTranslation(p("localover01", [ids[0]])).job!;
+  const job = payload(id);
+  assert.equal(job.chunkIds.length, 1);
+  let calls = 0;
+  await localTranslationJob(
+    job,
+    () => {},
+    async (_source, _target, blocks) => {
+      calls++;
+      return blocks;
+    },
+  );
+  assert.equal(calls, 1);
+  await localTranslationJob(
+    job,
+    () => {},
+    async () => {
+      throw new Error("Cached block must not run again");
+    },
+  );
+  await assert.rejects(
+    localTranslationJob(
+      { ...job, version: "local-1" },
+      () => {},
+      async () => {
+        throw new Error("Obsolete job must not run");
+      },
+    ),
+    /obsolete/,
+  );
+  db.prepare(
+    "DELETE FROM english_translation_search WHERE rowid IN (SELECT id FROM chunks WHERE video_id='localover01')",
+  ).run();
+  await localTranslationJob(
+    job,
+    () => {},
+    async () => {
+      throw new Error("Index repair must reuse the saved block");
+    },
+  );
+  assert.ok(
+    db
+      .prepare("SELECT 1 FROM english_translation_search WHERE rowid=?")
+      .get(job.chunkIds[0]),
+  );
+  db.prepare("DELETE FROM english_translation_search WHERE rowid=?").run(
+    job.chunkIds[0],
+  );
+  db.prepare("UPDATE jobs SET status='done' WHERE id=?").run(id);
 });
 test("local is default, deduplicates scopes, rejects cross-video sources and works with cloud paused", async () => {
   const ids = fixture("local000001"),
@@ -157,11 +230,15 @@ test("invalid output never saves and cached blocks remain readable without runti
     /mapping/,
   );
   assert.equal(getTranslations(p("local000004")).blocks.length, 0);
-  rmSync(join(temp, "runtime.sock"));
+  await new Promise<void>((resolve) => runtime.close(() => resolve()));
   assert.equal(getTranslations(p("local000001")).complete, true);
   assert.equal(getTranslations(p("local000004")).available, false);
   assert.throws(() => queueTranslation(p("local000002")), /runtime/i);
-  writeFileSync(join(temp, "runtime.sock"), "");
+  runtime = createServer();
+  await new Promise<void>((resolve) =>
+    runtime.listen(join(temp, "runtime.sock"), resolve),
+  );
+  ready();
 });
 
 test("English derived search preserves channel, topic, time and original evidence identity", async () => {
@@ -249,9 +326,45 @@ test("validated answers use one cloud call, reuse cache and invalidate with sour
     assert.equal(calls, 1);
     assert.equal(b.processing.cacheHit, true);
     assert.deepEqual(a.evidence, b.evidence);
+    const chunk = db
+      .prepare(
+        "SELECT c.id,c.text,v.content_hash FROM chunks c JOIN videos v ON v.id=c.video_id WHERE v.id='local000001' LIMIT 1",
+      )
+      .get() as { id: number; text: string; content_hash: string };
+    const { LOCAL_REVISION, LOCAL_VERSION, sourceHash } =
+      await import("../lib/local-runtime");
+    db.prepare(
+      "INSERT OR REPLACE INTO local_translation_blocks VALUES(?,?,?,?,?,?,?,?,?)",
+    ).run(
+      chunk.id,
+      chunk.content_hash,
+      sourceHash(chunk.text),
+      "ur",
+      LOCAL_REVISION,
+      LOCAL_VERSION,
+      "اردو 100",
+      "local",
+      new Date().toISOString(),
+    );
+    assert.equal((await expertResearch(p)).processing.cacheHit, true);
+    assert.equal(calls, 1);
     db.prepare(
       "UPDATE videos SET content_hash='new-answer-source' WHERE id='local000002'",
     ).run();
+    await expertResearch(p);
+    assert.equal(
+      calls,
+      1,
+      "An unrelated source does not invalidate the answer",
+    );
+    const relevant = a.evidence.find((e) => e.video_id)?.video_id;
+    assert.ok(relevant);
+    db.prepare(
+      "UPDATE videos SET content_hash='changed-relevant-source' WHERE id=?",
+    ).run(relevant);
+    db.prepare(
+      "UPDATE local_translation_blocks SET transcript_hash='changed-relevant-source' WHERE chunk_id IN (SELECT id FROM chunks WHERE video_id=?)",
+    ).run(relevant);
     await expertResearch(p);
     assert.equal(calls, 2);
     const c = db

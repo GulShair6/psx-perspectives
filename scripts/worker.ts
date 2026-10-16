@@ -2,40 +2,31 @@ import { db, now } from "../lib/db";
 import { claimJob, runJob, scheduleDiscovery } from "../lib/worker";
 import { aiSettings } from "../lib/ai";
 import { randomUUID } from "node:crypto";
+import { acquireWorker } from "../lib/worker-lease";
 const owner = randomUUID();
-const acquired = db
-  .transaction(() => {
-    const old = db
-      .prepare("SELECT heartbeat FROM worker_lock WHERE id=1")
-      .get() as { heartbeat: number } | undefined;
-    if (old && Date.now() - old.heartbeat < 30000) return false;
-    db.prepare(
-      "INSERT INTO worker_lock VALUES(1,?,?) ON CONFLICT(id) DO UPDATE SET owner=excluded.owner,heartbeat=excluded.heartbeat",
-    ).run(owner, Date.now());
-    db.prepare(
-      "UPDATE jobs SET status='failed',error='Worker interrupted. Imported evidence was preserved; retry from the activity screen.',updated_at=? WHERE status='running'",
-    ).run(now());
-    db.prepare(
-      "UPDATE analysis_runs SET status='failed',error='Worker interrupted; resume cloud analysis to retry with cached statements preserved' WHERE status='pending' AND EXISTS(SELECT 1 FROM jobs WHERE type='insights' AND status='failed' AND json_extract(payload,'$.id')=analysis_runs.video_id)",
-    ).run();
-    return true;
-  })
-  .immediate();
-if (!acquired) {
-  console.error("Another ingestion worker is already running.");
-  process.exit(1);
-}
 let stopping = false;
+for (const signal of ["SIGINT", "SIGTERM"] as const)
+  process.on(signal, () => {
+    stopping = true;
+  });
+let acquired = acquireWorker(owner);
+const deadline = Date.now() + 35_000;
+if (!acquired) console.log("Waiting for the previous worker lease to clear…");
+while (!acquired && !stopping && Date.now() < deadline) {
+  await new Promise((resolve) => setTimeout(resolve, 500));
+  if (!stopping) acquired = acquireWorker(owner);
+}
+if (!acquired) {
+  if (!stopping) console.error("Another ingestion worker is already running.");
+  db.close();
+  process.exit(stopping ? 0 : 1);
+}
 const heartbeat = setInterval(() => {
   const r = db
     .prepare("UPDATE worker_lock SET heartbeat=? WHERE id=1 AND owner=?")
     .run(Date.now(), owner);
   if (!r.changes) stopping = true;
 }, 5000);
-for (const signal of ["SIGINT", "SIGTERM"] as const)
-  process.on(signal, () => {
-    stopping = true;
-  });
 async function main() {
   const ai = aiSettings();
   console.log(

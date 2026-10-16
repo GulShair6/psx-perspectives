@@ -1,12 +1,13 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createServer } from "node:net";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 const temp = mkdtempSync(join(tmpdir(), "psx-local-ipc-"));
 process.env.PSX_LOCAL_TRANSLATION_DIR = temp;
-const { inferLocal, localRequest } = await import("../lib/local-runtime");
+const { inferLocal, localRequest, localReadiness, LOCAL_VERSION } =
+  await import("../lib/local-runtime");
 test("private local IPC preserves split Urdu bytes and redacts error credentials", async () => {
   process.env.HF_TOKEN = "synthetic-ipc-secret";
   const server = createServer((socket) => {
@@ -32,6 +33,41 @@ test("private local IPC preserves split Urdu bytes and redacts error credentials
     server.listen(join(temp, "runtime.sock"), resolve),
   );
   try {
+    writeFileSync(
+      join(temp, "installed.json"),
+      readFileSync("local_translation/models.json"),
+    );
+    const state = {
+      pid: process.pid,
+      owner: "test-runtime",
+      version: LOCAL_VERSION,
+      heartbeat: Date.now(),
+    };
+    assert.equal(
+      localReadiness().ready,
+      false,
+      "A socket alone is insufficient",
+    );
+    writeFileSync(join(temp, "runtime.json"), JSON.stringify(state));
+    assert.equal(
+      localReadiness().ready,
+      true,
+      "Busy runtime needs no status request",
+    );
+    writeFileSync(
+      join(temp, "runtime.json"),
+      JSON.stringify({ ...state, heartbeat: Date.now() - 31000 }),
+    );
+    assert.equal(localReadiness().ready, false);
+    writeFileSync(
+      join(temp, "runtime.json"),
+      JSON.stringify({ ...state, pid: 2147483647 }),
+    );
+    assert.equal(
+      localReadiness().ready,
+      false,
+      "A dead process cannot be ready",
+    );
     const rows = await inferLocal("hi", "ur", [
       { id: 1, text: "खरीदो मत 100" },
     ]);
