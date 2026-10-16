@@ -3,7 +3,12 @@ import { z } from "zod";
 import { db, now, queue } from "./db";
 import { aiSettings, askJson } from "./ai";
 import { pauseOnQuota, pipeline } from "./expert";
-import { youtubeCaptions, type CaptionCue } from "./youtube-captions";
+import { localScope, localState, queueLocal } from "./local-translations";
+import {
+  youtubeCaptions,
+  captionRetryAt,
+  type CaptionCue,
+} from "./youtube-captions";
 
 export const TRANSLATION_VERSION = "translation-1";
 const YOUTUBE_VERSION = "youtube-captions-1";
@@ -11,7 +16,7 @@ export const translationSchema = z
   .object({
     videoId: z.string().regex(/^[-\w]{11}$/),
     target: z.enum(["ur", "en"]),
-    method: z.enum(["youtube", "ollama"]).default("youtube"),
+    method: z.enum(["local", "youtube", "ollama"]).default("local"),
     segmentIds: z
       .array(z.number().int().positive())
       .min(1)
@@ -114,7 +119,7 @@ function latestJob(key: string): Job | null {
   return (
     (db
       .prepare(
-        "SELECT id,status,progress,error FROM jobs WHERE type IN ('translate','youtube_captions') AND json_extract(payload,'$.key')=? ORDER BY id DESC LIMIT 1",
+        "SELECT id,status,progress,error FROM jobs WHERE type IN ('translate','youtube_captions','local_translate') AND json_extract(payload,'$.key')=? ORDER BY id DESC LIMIT 1",
       )
       .get(key) as Job | undefined) || null
   );
@@ -127,8 +132,12 @@ function unavailableReason() {
       : null;
 }
 export function getTranslations(input: unknown) {
-  const s = scope(input),
-    translations = s.method === "ollama" ? saved(s) : [];
+  const s = scope(input);
+  const local =
+    s.method === "local"
+      ? localState(localScope(s.videoId, s.target, s.segmentIds))
+      : null;
+  const translations = s.method === "ollama" ? saved(s) : [];
   const track = s.method === "youtube" ? savedCaptionTrack(s) : null;
   const cues =
     track?.cues.filter((cue) =>
@@ -141,12 +150,17 @@ export function getTranslations(input: unknown) {
       ),
     ) || [];
   const reason =
-    s.method === "ollama"
-      ? unavailableReason()
-      : untimedReason(s) ||
-        (track && !cues.length
-          ? "YouTube captions do not overlap this saved passage. Use Ollama Cloud to translate the saved text."
-          : null);
+    s.method === "local"
+      ? local?.unavailableReason || null
+      : s.method === "ollama"
+        ? unavailableReason()
+        : untimedReason(s) ||
+          (!track && captionRetryAt() > Date.now()
+            ? `YouTube caption requests are paused after blocking. Retry after ${new Date(captionRetryAt()).toLocaleString()}. Saved text and local translations remain available.`
+            : null) ||
+          (track && !cues.length
+            ? "YouTube captions do not overlap this saved passage. Use Ollama Cloud to translate the saved text."
+            : null);
   return {
     videoId: s.videoId,
     transcriptHash: s.transcriptHash,
@@ -154,16 +168,21 @@ export function getTranslations(input: unknown) {
     method: s.method,
     translations,
     captionTrack: track ? { ...track, cues } : null,
+    blocks: local?.blocks || [],
+    readiness: local?.readiness || null,
+    quality: local?.quality || null,
     numberWarning:
       !!track &&
       JSON.stringify(numbers(s.segments.map((row) => row.text).join(" "))) !==
         JSON.stringify(numbers(cues.map((row) => row.text).join(" "))),
-    total: s.segments.length,
+    total: local?.total ?? s.segments.length,
     complete:
-      s.method === "youtube"
-        ? !!track && !reason
-        : translations.length === s.segments.length,
-    job: latestJob(s.key),
+      s.method === "local"
+        ? !!local?.complete
+        : s.method === "youtube"
+          ? !!track && !reason
+          : translations.length === s.segments.length,
+    job: local?.job || (s.method === "local" ? null : latestJob(s.key)),
     available: !reason,
     unavailableReason: reason,
     workerOnline: !!db
@@ -176,10 +195,16 @@ export function queueTranslation(input: unknown): { job: number | null } {
   return db
     .transaction(() => {
       const s = scope(input);
+      if (s.method === "local")
+        return queueLocal(localScope(s.videoId, s.target, s.segmentIds));
       if (s.method === "youtube") {
         const reason = untimedReason(s);
         if (reason) throw new Error(reason);
         if (savedCaptionTrack(s)) return { job: null };
+        if (captionRetryAt() > Date.now())
+          throw new Error(
+            `YouTube captions are cooling down until ${new Date(captionRetryAt()).toISOString()}; use saved text or local translation.`,
+          );
         const existing = latestJob(s.key);
         if (existing && ["queued", "running"].includes(existing.status))
           return { job: existing.id };
@@ -258,7 +283,7 @@ export async function youtubeCaptionJob(
     })
     .strict()
     .parse(input);
-  const s = scope({ videoId: p.videoId, target: p.target });
+  const s = scope({ videoId: p.videoId, target: p.target, method: "youtube" });
   if (s.transcriptHash !== p.transcriptHash || s.key !== p.key)
     throw new Error(
       "Transcript changed. Reopen it to request YouTube captions.",

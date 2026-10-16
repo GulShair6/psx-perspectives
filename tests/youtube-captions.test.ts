@@ -106,6 +106,7 @@ async function run(id: number) {
 }
 test.afterEach(() => {
   globalThis.fetch = originalFetch;
+  db.prepare("UPDATE caption_cooldown SET retry_at=0 WHERE id=1").run();
   requests.length = 0;
   db.prepare("UPDATE pipeline_state SET analysis_paused=NULL WHERE id=1").run();
 });
@@ -204,6 +205,7 @@ test("caption hosts, response bounds, blocking and timeouts cannot trigger fallb
     assert.equal(requests.length, 1);
   }
   for (const status of [403, 429, 500]) {
+    db.prepare("UPDATE caption_cooldown SET retry_at=0 WHERE id=1").run();
     let calls = 0;
     globalThis.fetch = async () => {
       calls++;
@@ -212,6 +214,7 @@ test("caption hosts, response bounds, blocking and timeouts cannot trigger fallb
     await assert.rejects(youtubeCaptions("ytcaption01", "en", "hi"));
     assert.equal(calls, 1);
   }
+  db.prepare("UPDATE caption_cooldown SET retry_at=0 WHERE id=1").run();
   let calls = 0;
   globalThis.fetch = async () => {
     calls++;
@@ -226,9 +229,9 @@ test("caption hosts, response bounds, blocking and timeouts cannot trigger fallb
   );
 });
 
-test("YouTube defaults, deduplicates overlapping scopes, saves separate cues and ignores cloud pause", async () => {
+test("Explicit YouTube retrieval deduplicates overlapping scopes, saves separate cues and ignores cloud pause", async () => {
   const ids = fixture("ytcaption02"),
-    p = { videoId: "ytcaption02", target: "en" };
+    p = { videoId: "ytcaption02", target: "en", method: "youtube" };
   db.prepare(
     "UPDATE pipeline_state SET analysis_paused='fixture pause' WHERE id=1",
   ).run();
@@ -279,7 +282,7 @@ test("YouTube defaults, deduplicates overlapping scopes, saves separate cues and
 test("numerical differences are warned, untimed or foreign passages rejected and GET never queues", async () => {
   const ids = fixture("ytcaption03"),
     foreign = fixture("ytcaption04"),
-    p = { videoId: "ytcaption03", target: "ur" };
+    p = { videoId: "ytcaption03", target: "ur", method: "youtube" };
   mock(
     [track("ur")],
     '<transcript><text start="1" dur="2">مختلف 999</text><text start="4" dur="2">200</text></transcript>',
@@ -310,7 +313,7 @@ test("numerical differences are warned, untimed or foreign passages rejected and
   ).n;
   const response = await GET(
     new NextRequest(
-      "http://127.0.0.1:3000/api/translations?videoId=ytcaption04&target=en",
+      "http://127.0.0.1:3000/api/translations?videoId=ytcaption04&target=en&method=youtube",
       { headers: { host: "127.0.0.1:3000" } },
     ),
     params,
@@ -335,14 +338,15 @@ test("numerical differences are warned, untimed or foreign passages rejected and
     );
   assert.equal((await post({ ...p, method: "google" })).status, 400);
   assert.equal(
-    (await post({ videoId: "ytcaption04", target: "en" })).status,
+    (await post({ videoId: "ytcaption04", target: "en", method: "youtube" }))
+      .status,
     202,
   );
 });
 
 test("interruption and retry preserve originals; stale downloads never enter the cache", async () => {
   fixture("ytcaption05");
-  const p = { videoId: "ytcaption05", target: "en" };
+  const p = { videoId: "ytcaption05", target: "en", method: "youtube" };
   globalThis.fetch = async () => {
     throw new Error("fixture interrupted");
   };
@@ -363,4 +367,24 @@ test("interruption and retry preserve originals; stale downloads never enter the
   mock([track("en")]);
   await run(queueTranslation(p).job!);
   assert.equal(getTranslations(p).complete, true);
+});
+
+test("blocking cooldown persists across videos and explicit target requests", async () => {
+  let calls = 0;
+  globalThis.fetch = async () => {
+    calls++;
+    return new Response("blocked", { status: 429 });
+  };
+  await assert.rejects(captions("ytcaption01"));
+  const first = calls;
+  assert.ok(first > 0);
+  await assert.rejects(youtubeCaptions("ytcaption02", "ur", "hi"));
+  assert.equal(calls, first);
+  assert.ok(
+    (
+      db.prepare("SELECT retry_at FROM caption_cooldown").get() as {
+        retry_at: number;
+      }
+    ).retry_at > Date.now(),
+  );
 });

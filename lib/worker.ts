@@ -12,10 +12,12 @@ import { sixMonthsAgo } from "./time";
 import { indexVideo, refreshCatalog } from "./knowledge";
 import { analyzeInsights, scheduleInsights, pipeline } from "./expert";
 import { translateJob, youtubeCaptionJob } from "./translations";
-import { captions } from "./youtube-captions";
+import { scheduleLocalPreparation } from "./local-preparation";
+import { localTranslationJob } from "./local-translations";
+import { captions, CAPTION_RETRY_INTERVAL } from "./youtube-captions";
 export { captions, normalizeCaptions } from "./youtube-captions";
 export const DISCOVERY_INTERVAL = 6 * 60 * 60 * 1000;
-export const CAPTION_RETRY_INTERVAL = 24 * 60 * 60 * 1000;
+export { CAPTION_RETRY_INTERVAL } from "./youtube-captions";
 
 export const extractionIds = z
   .array(z.string().regex(/^[-\w]{11}$/))
@@ -156,6 +158,7 @@ export function queueDiscovery(sourceId: number, time = Date.now()) {
 }
 
 export function scheduleDiscovery(time = Date.now()) {
+  scheduleLocalPreparation();
   extendHistory();
   db.transaction(() => {
     const due = db
@@ -328,6 +331,7 @@ export async function runJob(job: {
     db
       .prepare("UPDATE jobs SET progress=?,updated_at=? WHERE id=?")
       .run(text, now(), job.id);
+  if (job.type === "local_translate") return localTranslationJob(p, progress);
   if (job.type === "catalog") return refreshCatalog();
   if (job.type === "translate") return translateJob(p, progress);
   if (job.type === "youtube_captions") return youtubeCaptionJob(p, progress);
@@ -449,7 +453,7 @@ export function claimJob() {
     .transaction(() => {
       const j = db
         .prepare(
-          "SELECT id,type,payload FROM jobs WHERE status='queued' ORDER BY CASE WHEN type='insights' THEN 1 ELSE 0 END,CASE WHEN type='insights' THEN (SELECT julianday(published_at) FROM videos WHERE id=json_extract(jobs.payload,'$.id')) END DESC,id LIMIT 1",
+          "SELECT id,type,payload FROM jobs WHERE status='queued' ORDER BY CASE WHEN type='local_translate' AND json_extract(payload,'$.priority')='reading' THEN -1 WHEN type='local_translate' AND json_extract(payload,'$.priority')='archive' THEN 3 WHEN type='local_translate' THEN 2 WHEN type='insights' THEN 1 ELSE 0 END,CASE WHEN type='insights' THEN (SELECT julianday(published_at) FROM videos WHERE id=json_extract(jobs.payload,'$.id')) END DESC,id LIMIT 1",
         )
         .get() as { id: number; type: string; payload: string } | undefined;
       if (j)

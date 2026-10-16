@@ -13,6 +13,10 @@ ROOT = Path(__file__).resolve().parents[1]
 DATA = ROOT / 'data/local-translation'
 MODELS = json.loads((ROOT / 'local_translation/models.json').read_text())
 VERSION = 'local-1'
+class TranslationError(ValueError):
+    pass
+
+
 NUMBERS = re.compile(r'[+\-−]?\d+(?:[.,]\d+)*(?:[%٪])?')
 
 
@@ -21,7 +25,7 @@ def split_text(text, fits):
     if fits(text):
         return [text]
     if len(text) < 2:
-        raise ValueError('Source cannot fit the tokenizer limit')
+        raise TranslationError('Source cannot fit the tokenizer limit')
     middle = len(text) // 2
     boundaries = [m.end() for m in re.finditer(r'[.!?।۔\n]\s*|\s+', text)
                   if len(text) // 4 <= m.end() <= 3 * len(text) // 4]
@@ -31,16 +35,17 @@ def split_text(text, fits):
 
 def validate(source, output):
     if not output.strip() or len(output) > max(2048, len(source) * 12):
-        raise ValueError('Empty or oversized translation')
+        raise TranslationError('Empty or oversized translation')
     if sorted(NUMBERS.findall(source)) != sorted(NUMBERS.findall(output)):
-        raise ValueError('Translation changed numerical notation; original retained')
+        raise TranslationError('Translation changed numerical notation; original retained')
 
 
 class Translator:
     def __init__(self):
         # Force offline even if the caller has a network connection or credentials.
         os.environ.update(HF_HUB_OFFLINE='1', TRANSFORMERS_OFFLINE='1',
-                          HF_HUB_DISABLE_TELEMETRY='1', TOKENIZERS_PARALLELISM='false',
+                          HF_HUB_DISABLE_TELEMETRY='1', HF_HOME=str(DATA / 'hf'),
+                          HF_MODULES_CACHE=str(DATA / 'modules'), TOKENIZERS_PARALLELISM='false',
                           OMP_NUM_THREADS='2', MKL_NUM_THREADS='2')
         def blocked(*args, **kwargs):
             raise OSError('External networking disabled in local translation runtime')
@@ -57,7 +62,7 @@ class Translator:
     def translate(self, source, target, blocks):
         langs = {'hi': 'hin_Deva', 'ur': 'urd_Arab', 'en': 'eng_Latn', 'pa': 'pan_Guru'}
         if source not in langs or target not in ('en', 'ur'):
-            raise ValueError('Unsupported source language/script')
+            raise TranslationError('Unsupported source language/script')
         if source == target:
             return [{'id': b['id'], 'text': b['text']} for b in blocks]
         direction = 'en-indic' if source == 'en' else 'indic-en' if target == 'en' else 'indic-indic'
@@ -87,7 +92,7 @@ class Translator:
                 eos = eos if isinstance(eos, list) else [eos]
                 # EOS at the beginning is a decoder start token, not proof of completion.
                 if int(result[0][-1]) not in eos:
-                    raise ValueError('Translation output truncated; original retained')
+                    raise TranslationError('Translation output truncated; original retained')
                 decoded = self.tokenizer.batch_decode(result, skip_special_tokens=True)
                 text = self.processor.postprocess_batch(decoded, lang=langs[target])[0]
                 validate(piece, text)
@@ -101,27 +106,35 @@ class Translator:
 class Handler(socketserver.StreamRequestHandler):
     def handle(self):
         try:
-            raw = self.rfile.readline(262145)
-            if len(raw) > 262144:
-                raise ValueError('Request too large')
+            raw = self.rfile.readline(1048577)
+            if len(raw) > 1048576:
+                raise TranslationError('Request too large')
             p = json.loads(raw)
-            if p.get('operation') == 'status':
+            if p.get('deadline', 0) < time.time() * 1000:
+                raise TranslationError('Local request expired while the runtime was busy; retry when ready')
+            if p.get('operation') == 'reset':
+                self.server.translator.model = self.server.translator.tokenizer = None
+                self.server.translator.loaded = None
+                gc.collect()
+                response = {'ready': True}
+            elif p.get('operation') == 'status':
                 response = {'ready': True, 'version': VERSION}
             else:
                 blocks = p['blocks']
                 if not isinstance(blocks, list) or not 1 <= len(blocks) <= 20:
-                    raise ValueError('Invalid translation batch')
+                    raise TranslationError('Invalid translation batch')
                 if any(not isinstance(b['id'], int) or not isinstance(b['text'], str) or not b['text'].strip() for b in blocks):
-                    raise ValueError('Invalid translation block')
-                if sum(len(b['text'].encode()) for b in blocks) > 65536:
-                    raise ValueError('Source batch too large')
+                    raise TranslationError('Invalid translation block')
+                if sum(len(b['text'].encode()) for b in blocks) > 524288:
+                    raise TranslationError('Source batch too large')
                 start = time.monotonic()
                 response = {'blocks': self.server.translator.translate(p['source'], p['target'], blocks),
-                            'seconds': time.monotonic() - start}
+                            'seconds': time.monotonic() - start,
+                            'peakRssMiB': __import__('resource').getrusage(__import__('resource').RUSAGE_SELF).ru_maxrss / 1024}
             self.wfile.write((json.dumps(response, ensure_ascii=False) + '\n').encode())
         except Exception as e:
             # Exceptions from third-party code can contain source text or local credentials.
-            message = str(e) if isinstance(e, ValueError) else 'Local model failed; check installation and model access'
+            message = str(e) if isinstance(e, TranslationError) else 'Local model failed; check installation and model access'
             self.wfile.write((json.dumps({'error': message}) + '\n').encode())
 
 

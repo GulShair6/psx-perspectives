@@ -23,10 +23,30 @@ const children = [
     { stdio: "inherit" },
   ),
 ];
+const localPython = resolve("data/local-translation/venv/bin/python");
+let localRuntime;
+if (
+  existsSync(localPython) &&
+  existsSync("data/local-translation/installed.json")
+) {
+  const localEnv = { ...process.env };
+  for (const key of Object.keys(localEnv))
+    if (/KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL/i.test(key)) delete localEnv[key];
+  localRuntime = spawn(localPython, [resolve("local_translation/runtime.py")], {
+    stdio: ["ignore", "ignore", "inherit"],
+    env: localEnv,
+  });
+  localRuntime.on("error", () =>
+    console.error(
+      "Local translation runtime could not start; saved captions remain available.",
+    ),
+  );
+}
 let closing = false;
 function stop(code = 0) {
   if (closing) return;
   closing = true;
+  localRuntime?.kill("SIGTERM");
   for (const child of children) child.kill("SIGTERM");
   setTimeout(() => {
     for (const child of children) child.kill("SIGKILL");

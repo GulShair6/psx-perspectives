@@ -9,7 +9,9 @@ export const LOCAL_VERSION = "local-1";
 export const LOCAL_REVISION = createHash("sha256")
   .update(JSON.stringify(models))
   .digest("hex");
-export const localDirectory = join(process.cwd(), "data/local-translation");
+export const localDirectory =
+  process.env.PSX_LOCAL_TRANSLATION_DIR ||
+  join(process.cwd(), "data/local-translation");
 export const sourceHash = (text: string) =>
   createHash("sha256").update(text).digest("hex");
 export function localReadiness() {
@@ -81,6 +83,17 @@ export function validateLocalBlocks(input: LocalBlock[], raw: unknown) {
       "Local translation returned an incomplete or invalid block mapping",
     );
   for (const row of out) {
+    if (
+      [
+        "OLLAMA_API_KEY",
+        "OPENAI_API_KEY",
+        "YOUTUBE_DATA_API_KEY",
+        "HF_TOKEN",
+      ].some(
+        (name) => process.env[name] && row.text.includes(process.env[name]!),
+      )
+    )
+      throw new Error("Local response contained credential data; discarded");
     const original = input.find((b) => b.id === row.id)!;
     if (
       row.text.length > Math.max(2048, original.text.length * 12) ||
@@ -99,6 +112,7 @@ export function localRequest(
 ): Promise<unknown> {
   return new Promise((resolve, reject) => {
     const socket = createConnection(join(localDirectory, "runtime.sock"));
+    socket.setEncoding("utf8");
     let text = "";
     const fail = () => {
       socket.destroy();
@@ -110,7 +124,14 @@ export function localRequest(
     };
     socket.setTimeout(timeout, fail);
     socket.on("error", fail);
-    socket.on("connect", () => socket.end(JSON.stringify(payload) + "\n"));
+    socket.on("connect", () =>
+      socket.end(
+        JSON.stringify({
+          ...(payload as object),
+          deadline: Date.now() + timeout,
+        }) + "\n",
+      ),
+    );
     socket.on("data", (data) => {
       text += data.toString();
       if (Buffer.byteLength(text) > 2_000_000) fail();
@@ -118,12 +139,24 @@ export function localRequest(
     socket.on("end", () => {
       try {
         const parsed = JSON.parse(text);
-        if (parsed.error)
-          throw new Error(
+        if (parsed.error) {
+          let message =
             typeof parsed.error === "string"
-              ? parsed.error
-              : "Local translation failed",
-          );
+              ? parsed.error.slice(0, 2048)
+              : "Local translation failed";
+          for (const name of [
+            "OLLAMA_API_KEY",
+            "OPENAI_API_KEY",
+            "YOUTUBE_DATA_API_KEY",
+            "HF_TOKEN",
+          ])
+            if (process.env[name])
+              message = message.replaceAll(
+                process.env[name]!,
+                "[credential redacted]",
+              );
+          throw new Error(message);
+        }
         resolve(parsed);
       } catch (e) {
         reject(e);

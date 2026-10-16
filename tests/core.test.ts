@@ -526,6 +526,12 @@ test("blocked captions stop the batch and unavailable videos get a daily cooldow
       "UPDATE videos SET caption_attempted_at=? WHERE id='autovid0002'",
     ).run(new Date(Date.now() - 25 * 3600000).toISOString());
     await assert.rejects(() => runJob(job), /too many requests/);
+    assert.equal(requests, 1);
+    db.prepare("UPDATE caption_cooldown SET retry_at=0 WHERE id=1").run();
+    db.prepare(
+      "UPDATE videos SET caption_attempted_at=? WHERE id='autovid0002'",
+    ).run(new Date(Date.now() - 25 * 3600000).toISOString());
+    await assert.rejects(() => runJob(job), /too many requests/);
     assert.equal(requests, 2);
     assert.match(
       (

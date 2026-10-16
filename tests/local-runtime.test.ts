@@ -39,3 +39,19 @@ test("local mapping and numerical notation are exact", () => {
 test("readiness never needs provider credentials", () => {
   assert.equal(typeof localReadiness().ready, "boolean");
 });
+
+test("local results reject credential data before caching", () => {
+  process.env.HF_TOKEN = "synthetic-private-token";
+  try {
+    assert.throws(
+      () =>
+        validateLocalBlocks(
+          [{ id: 1, text: "Source" }],
+          [{ id: 1, text: "synthetic-private-token" }],
+        ),
+      /credential/,
+    );
+  } finally {
+    delete process.env.HF_TOKEN;
+  }
+});

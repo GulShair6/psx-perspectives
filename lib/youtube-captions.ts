@@ -1,3 +1,12 @@
+import { db } from "./db";
+export const CAPTION_RETRY_INTERVAL = 24 * 60 * 60 * 1000;
+export function captionRetryAt() {
+  return (
+    db.prepare("SELECT retry_at FROM caption_cooldown WHERE id=1").get() as {
+      retry_at: number;
+    }
+  ).retry_at;
+}
 import {
   YoutubeTranscript,
   YoutubeTranscriptTooManyRequestError,
@@ -53,11 +62,7 @@ function arrayMetadata(body: string, name: string) {
   throw new Error("Malformed YouTube caption metadata");
 }
 
-export async function captions(
-  id: string,
-  target?: "ur" | "en",
-  hint?: string,
-) {
+async function fetchCaptions(id: string, target?: "ur" | "en", hint?: string) {
   let milliseconds = false;
   let blocked = false;
   let provenance = "YouTube captions (track provenance unavailable)";
@@ -216,6 +221,24 @@ export async function captions(
     lang: preferred?.languageCode || s.lang,
     provenance,
   }));
+}
+
+export async function captions(
+  id: string,
+  target?: "ur" | "en",
+  hint?: string,
+) {
+  if (captionRetryAt() > Date.now())
+    throw new YoutubeTranscriptTooManyRequestError();
+  try {
+    return await fetchCaptions(id, target, hint);
+  } catch (e) {
+    if (e instanceof YoutubeTranscriptTooManyRequestError)
+      db.prepare(
+        "UPDATE caption_cooldown SET retry_at=MAX(retry_at,?) WHERE id=1",
+      ).run(Date.now() + CAPTION_RETRY_INTERVAL);
+    throw e;
+  }
 }
 
 export async function youtubeCaptions(
