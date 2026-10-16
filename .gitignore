@@ -18,3 +18,4 @@ preview.png
 *.key
 .aws/
 .codex/
+__pycache__/
