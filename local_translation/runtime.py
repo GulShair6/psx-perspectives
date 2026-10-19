@@ -1,5 +1,7 @@
 """CPU-only, offline IndicTrans2 service. No transcript text leaves this process."""
 import gc
+import hashlib
+from importlib.metadata import version as package_version, PackageNotFoundError
 import json
 import os
 from pathlib import Path
@@ -8,13 +10,31 @@ import socket
 import socketserver
 import sys
 import time
+import threading
+import uuid
+import signal
 
 ROOT = Path(__file__).resolve().parents[1]
-DATA = ROOT / 'data/local-translation'
+DATA = Path(os.environ.get('PSX_LOCAL_TRANSLATION_DIR', ROOT / 'data/local-translation'))
 MODELS = json.loads((ROOT / 'local_translation/models.json').read_text())
-VERSION = 'local-1'
+PINNED_REQUIREMENTS = (ROOT / 'local_translation/requirements.txt').read_bytes().decode('utf8')
+REVISION = hashlib.sha256(json.dumps({'models': MODELS, 'requirements': PINNED_REQUIREMENTS}, ensure_ascii=False, separators=(',', ':')).encode('utf8')).hexdigest()
+VERSION = 'local-2'
 class TranslationError(ValueError):
     pass
+
+
+def check_dependencies():
+    for line in PINNED_REQUIREMENTS.splitlines():
+        if not line.strip() or line.startswith(('#', '--')):
+            continue
+        name, expected = line.split('==')
+        try:
+            if package_version(name) == expected:
+                continue
+        except PackageNotFoundError:
+            pass
+        raise TranslationError('Local dependencies differ from the pinned setup. Rerun local_translation/setup.py.')
 
 
 NUMBERS = re.compile(r'[+\-−]?\d+(?:[.,]\d+)*(?:[%٪])?')
@@ -50,6 +70,7 @@ class Translator:
         def blocked(*args, **kwargs):
             raise OSError('External networking disabled in local translation runtime')
         socket.socket.connect = blocked
+        check_dependencies()
         import torch
         torch.set_num_threads(2)
         torch.set_num_interop_threads(1)
@@ -57,7 +78,7 @@ class Translator:
         self.loaded = None
         self.model = self.tokenizer = None
         from IndicTransToolkit.processor import IndicProcessor
-        self.processor = IndicProcessor(inference=True)
+        self.processor_factory = IndicProcessor
 
     def translate(self, source, target, blocks):
         langs = {'hi': 'hin_Deva', 'ur': 'urd_Arab', 'en': 'eng_Latn', 'pa': 'pan_Guru'}
@@ -78,14 +99,16 @@ class Translator:
             self.loaded = direction
         out = []
         for block in blocks:
-            def prepared(text):
-                return self.processor.preprocess_batch([text], src_lang=langs[source], tgt_lang=langs[target])
             def fits(text):
-                return len(self.tokenizer(prepared(text), truncation=False)['input_ids'][0]) <= 200
+                probe = self.processor_factory(inference=True)
+                prepared = probe.preprocess_batch([text], src_lang=langs[source], tgt_lang=langs[target])
+                return len(self.tokenizer(prepared, truncation=False)['input_ids'][0]) <= 200
             pieces = split_text(block['text'], fits)
             translated = []
             for piece in pieces:
-                inputs = self.tokenizer(prepared(piece), padding=True, truncation=False, return_tensors='pt')
+                processor = self.processor_factory(inference=True)
+                prepared = processor.preprocess_batch([piece], src_lang=langs[source], tgt_lang=langs[target])
+                inputs = self.tokenizer(prepared, padding=True, truncation=False, return_tensors='pt')
                 with self.torch.inference_mode():
                     result = self.model.generate(**inputs, num_beams=4, max_new_tokens=256, do_sample=False)
                 eos = self.model.generation_config.eos_token_id
@@ -94,7 +117,7 @@ class Translator:
                 if int(result[0][-1]) not in eos:
                     raise TranslationError('Translation output truncated; original retained')
                 decoded = self.tokenizer.batch_decode(result, skip_special_tokens=True)
-                text = self.processor.postprocess_batch(decoded, lang=langs[target])[0]
+                text = processor.postprocess_batch(decoded, lang=langs[target])[0]
                 validate(piece, text)
                 translated.append(text)
             text = ' '.join(translated)
@@ -138,6 +161,22 @@ class Handler(socketserver.StreamRequestHandler):
             self.wfile.write((json.dumps({'error': message}) + '\n').encode())
 
 
+def publish_readiness(owner):
+    temporary = DATA / ('runtime-' + owner + '.tmp')
+    temporary.write_text(json.dumps({'pid': os.getpid(), 'owner': owner, 'version': VERSION, 'revision': REVISION, 'heartbeat': time.time() * 1000}))
+    os.chmod(temporary, 0o600)
+    temporary.replace(DATA / 'runtime.json')
+
+
+def clear_readiness(owner):
+    try:
+        if json.loads((DATA / 'runtime.json').read_text()).get('owner') == owner:
+            (DATA / 'runtime.json').unlink(missing_ok=True)
+            (DATA / 'runtime.sock').unlink(missing_ok=True)
+    except (OSError, ValueError):
+        pass
+
+
 def serve():
     DATA.mkdir(parents=True, exist_ok=True)
     import fcntl
@@ -146,10 +185,27 @@ def serve():
     path = DATA / 'runtime.sock'
     path.unlink(missing_ok=True)
     translator = Translator()
+    owner = uuid.uuid4().hex
+    stopped = threading.Event()
+    def heartbeat():
+        while not stopped.wait(5):
+            publish_readiness(owner)
+    def terminate(*args):
+        raise SystemExit(0)
+    signal.signal(signal.SIGTERM, terminate)
+    signal.signal(signal.SIGINT, terminate)
     with socketserver.UnixStreamServer(str(path), Handler) as server:
         os.chmod(path, 0o600)
         server.translator = translator
-        server.serve_forever()
+        publish_readiness(owner)
+        thread = threading.Thread(target=heartbeat, daemon=True)
+        thread.start()
+        try:
+            server.serve_forever()
+        finally:
+            stopped.set()
+            thread.join(timeout=1)
+            clear_readiness(owner)
 
 
 if __name__ == '__main__':

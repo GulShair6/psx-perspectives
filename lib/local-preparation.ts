@@ -82,9 +82,15 @@ export function scheduleLocalPreparation() {
   const archive = archiveReadiness();
   const candidates = db
     .prepare(
-      `SELECT c.id,c.video_id,EXISTS(SELECT 1 FROM caption_segments seg WHERE seg.video_id=v.id AND seg.retrieved_at>=(SELECT preparation_since FROM local_reading_state WHERE id=1)) is_new FROM chunks c JOIN videos v ON v.id=c.video_id JOIN sources s ON s.id=v.source_id WHERE s.enabled=1 AND (is_new OR (? AND NOT EXISTS(SELECT 1 FROM jobs WHERE status IN ('queued','running')))) AND NOT EXISTS(SELECT 1 FROM local_translation_blocks b WHERE b.chunk_id=c.id AND b.transcript_hash=v.content_hash AND b.target='en' AND b.revision=? AND b.version=?) AND NOT EXISTS(SELECT 1 FROM jobs j WHERE j.type='local_translate' AND j.status='failed' AND json_extract(j.payload,'$.transcriptHash')=v.content_hash AND json_extract(j.payload,'$.revision')=? AND json_extract(j.payload,'$.target')='en' AND EXISTS(SELECT 1 FROM json_each(j.payload,'$.chunkIds') WHERE value=c.id)) ORDER BY is_new DESC,v.published_at DESC,c.ordinal LIMIT 50`,
+      `SELECT c.id,c.video_id,EXISTS(SELECT 1 FROM caption_segments seg WHERE seg.video_id=v.id AND seg.retrieved_at>=(SELECT preparation_since FROM local_reading_state WHERE id=1)) is_new FROM chunks c JOIN videos v ON v.id=c.video_id JOIN sources s ON s.id=v.source_id WHERE s.enabled=1 AND (is_new OR (? AND NOT EXISTS(SELECT 1 FROM jobs WHERE status IN ('queued','running')))) AND NOT EXISTS(SELECT 1 FROM local_translation_blocks b WHERE b.chunk_id=c.id AND b.transcript_hash=v.content_hash AND b.target='en' AND b.revision=? AND b.version=?) AND NOT EXISTS(SELECT 1 FROM jobs j WHERE j.type='local_translate' AND j.status='failed' AND json_extract(j.payload,'$.transcriptHash')=v.content_hash AND json_extract(j.payload,'$.revision')=? AND json_extract(j.payload,'$.version')=? AND json_extract(j.payload,'$.target')='en' AND EXISTS(SELECT 1 FROM json_each(j.payload,'$.chunkIds') WHERE value=c.id)) ORDER BY is_new DESC,v.published_at DESC,c.ordinal LIMIT 50`,
     )
-    .all(Number(archive), LOCAL_REVISION, LOCAL_VERSION, LOCAL_REVISION) as {
+    .all(
+      Number(archive),
+      LOCAL_REVISION,
+      LOCAL_VERSION,
+      LOCAL_REVISION,
+      LOCAL_VERSION,
+    ) as {
     id: number;
     video_id: string;
     is_new: number;

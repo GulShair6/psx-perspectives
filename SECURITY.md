@@ -2,7 +2,7 @@
 
 ## Supported use
 
-PSX Perspectives is a single-user application for a trusted local computer. Run the web server on `127.0.0.1` using the supplied launcher. The API checks localhost hosts and same-origin JSON mutations; it has no user authentication. Do not expose it through a public reverse proxy, tunnel, or shared server.
+PSX Perspectives is a single-user application for a trusted local computer. Run the web server on `127.0.0.1` using the supplied launcher. The API checks localhost hosts, rejects cross-site browser requests and requires same-origin JSON mutations; it has no user authentication. Do not expose it through a public reverse proxy, tunnel, or shared server.
 
 Security fixes target the current default branch. Older snapshots are not maintained separately; back up your database before updating.
 
@@ -17,3 +17,5 @@ If that option is unavailable, open an issue requesting a private security conta
 Keep `.env`, `.env.local`, SQLite files, backups, and private research out of version control. Set restrictive file permissions on shared computers. Selected evidence and questions are sent to the configured cloud provider; provider account limits and terms apply. Rotate any credential that has been disclosed, including in Git history; deleting the current file does not revoke it.
 
 The code license does not grant rights to redistribute YouTube captions, channel content, or PSX data. Public releases should contain source and synthetic fixtures only.
+
+The optional Python model stack has a separate dependency boundary. A clean npm audit does not certify those packages or pinned model code. Review [current local-runtime findings](docs/local-runtime-security.md) before installing or enabling that experimental stack. Dependabot monitors its pip requirements separately; model weights are never included in the source release.

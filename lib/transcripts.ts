@@ -17,6 +17,7 @@ export function parseTranscript(text: string): Passage[] {
   let timestamp: number | null = null;
   let endTimestamp: number | null = null;
   let block: string[] = [];
+  let skipMetadata = false;
   const flush = () => {
     const joined = block
       .join(" ")
@@ -33,8 +34,25 @@ export function parseTranscript(text: string): Passage[] {
     block = [];
   };
   for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed) {
+      flush();
+      timestamp = null;
+      endTimestamp = null;
+      skipMetadata = false;
+      continue;
+    }
+    if (skipMetadata) continue;
+    if (
+      timed &&
+      timestamp === null &&
+      /^(?:WEBVTT(?:\s|$)|NOTE(?:\s|$)|STYLE$|REGION$)/.test(trimmed)
+    ) {
+      skipMetadata = true;
+      continue;
+    }
     const match = line.match(
-      /(?:(\d{1,2}):)?(\d{2}):(\d{2})(?:[.,](\d{3}))?\s*-->/,
+      /^\s*(?:(\d{1,2}):)?(\d{2}):(\d{2})(?:[.,](\d{3}))?\s*-->/,
     );
     if (match) {
       if (Number(match[2]) > 59 || Number(match[3]) > 59)
@@ -57,15 +75,9 @@ export function parseTranscript(text: string): Passage[] {
         Number(match[4] || 0) / 1000;
       if (endTimestamp < timestamp)
         throw new Error("Caption end precedes start");
-    } else if (!line.trim()) {
-      flush();
-      timestamp = null;
-      endTimestamp = null;
-    } else if (
-      (!timed || !/^\d+$/.test(line.trim())) &&
-      !/^(WEBVTT|NOTE|Kind:|Language:)/.test(line.trim())
-    )
-      block.push(line.trim());
+    } else if (timed && line.includes("-->")) {
+      throw new Error("Invalid caption timestamp");
+    } else if (!timed || timestamp !== null) block.push(trimmed);
   }
   flush();
   return output;
@@ -92,7 +104,14 @@ export function importTranscript(input: unknown) {
           }
         | undefined;
       if (existing?.content_hash) {
-        if (existing.content_hash !== hash)
+        if (
+          existing.content_hash !== hash &&
+          !db
+            .prepare(
+              "SELECT 1 FROM source_repairs WHERE video_id=? AND previous_hash=? AND content_hash=?",
+            )
+            .get(id, hash, existing.content_hash)
+        )
           throw new Error(
             "This video already has a different transcript. Existing reviewed evidence was preserved.",
           );

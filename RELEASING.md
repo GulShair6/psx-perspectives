@@ -9,6 +9,7 @@ From a clean checkout using Node.js 22.13+:
 ```sh
 npm ci
 npm run check
+python3.11 -m unittest discover -s local_translation -p 'test_*.py'
 npx playwright install --with-deps chromium
 npm run test:browser
 npm audit --audit-level=high
@@ -19,6 +20,8 @@ Inspect the browser screenshots with synthetic data on desktop and mobile. Smoke
 Test upgrades with a backup copy of an older database. Migrations apply automatically; downgrading the code does not undo schema changes. For rollback, stop both processes, restore the pre-upgrade backup to a clean location, and run the matching earlier revision. See [backup and restore](README.md#backup-and-restore).
 
 Live YouTube/PSX/provider checks are separate from deterministic CI. Record which services and credentials were tested. Do not claim complete collection, model accuracy, or investment reliability from synthetic test results. The independent real-corpus evaluation described in [README.md](README.md#limits-and-verification-status) remains a prerequisite for accuracy claims.
+
+Review the optional Python environment separately: `npm audit` does not inspect `local_translation/requirements.txt`. Check direct and resolved transitive Python dependencies against current advisories before release, record reachability and fixed versions, and rerun the pinned-model trial after dependency changes. Lightweight Python tests do not install or validate the model stack. See the [local runtime security review](docs/local-runtime-security.md) for the current unresolved findings.
 
 ## Review what becomes public
 
@@ -35,8 +38,12 @@ The repository owner should enable these settings before accepting contributions
 - Branch rules blocking force pushes and deletion of the default branch.
 - Private vulnerability reporting, Dependabot alerts, and secret scanning/push protection where available.
 
-The workflow uses a read-only token, pinned action commits, no provider credentials, and no deployment step. Pull requests from forks run without repository secrets. Dependabot proposes npm and action updates; review and test them before merging.
+GitHub can restrict branch protections on private repositories by account plan. If the API reports that limitation, record it rather than claiming protections are enabled. After an owner-approved switch to public visibility, configure and verify the required checks and review rules before accepting contributions; a paid plan is not a prerequisite for this local project.
+
+The workflow uses a read-only token, pinned action commits, no provider credentials, and no deployment step. Pull requests from forks run without repository secrets. Dependabot proposes npm, Python and action updates; review and test them before merging.
 
 ## Publish deliberately
 
 Review the diff and all release evidence, choose a version, and write release notes describing user-visible changes and remaining limits. Tag the reviewed commit and attach a source release. Changing repository visibility and publishing a tag/release are separate owner actions; local preparation does not perform them.
+
+Start release notes from [CHANGELOG.md](CHANGELOG.md). Confirm that hosted CI passed for the exact proposed release commit, rather than an earlier default-branch revision. Keep collected transcripts, human labels, benchmarks and private security-scan output outside the source archive.

@@ -1,3 +1,4 @@
+import { numericalTokens } from "./numbers";
 import OpenAI from "openai";
 import { today } from "./time";
 import { z } from "zod";
@@ -161,13 +162,19 @@ export function validateExtraction(
   for (const o of result.opinions) {
     const p = passages.find((p) => p.id === o.passage_id);
     const company = companies().find((c) => c.symbol === o.symbol)!;
-    if (!p || !p.text.includes(o.quote) || !matchesCompany(p.text, company))
+    if (!p || !p.text.includes(o.quote) || !matchesCompany(o.quote, company))
       throw new Error("Extraction contained an unsupported quote or company");
     if (
-      (o.target && !p.text.includes(o.target)) ||
-      (o.horizon && !p.text.includes(o.horizon))
+      (o.target && !o.quote.includes(o.target)) ||
+      (o.horizon && !o.quote.includes(o.horizon))
     )
       throw new Error("Target or horizon was not explicitly stated");
+    if (
+      numericalTokens(o.rationale).some(
+        (n) => !numericalTokens(o.quote).includes(n),
+      )
+    )
+      throw new Error("Rationale adds unsupported numbers");
   }
   return result;
 }
@@ -276,10 +283,7 @@ const answerValidator = z.object({
 });
 export function validateAnswer(raw: unknown, evidence: Evidence[]) {
   const answer = answerValidator.parse(raw);
-  const numbers = (s: string) =>
-    [
-      ...s.replace(/,/g, "").matchAll(/(?<![\p{L}\p{N}])[-+]?\d+(?:\.\d+)?/gu),
-    ].map((m) => Number(m[0]));
+  const numbers = numericalTokens;
   for (const [kind, items] of [
     ["company", answer.facts],
     ["commentary", answer.expertViews],

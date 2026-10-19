@@ -42,6 +42,13 @@ function local(request: NextRequest, mutation = false) {
   const host = request.headers.get("host");
   if (!host || !/^localhost(?::\d+)?$|^127\.0\.0\.1(?::\d+)?$/.test(host))
     throw new Error("Only localhost access is supported");
+  const origin = request.headers.get("origin");
+  const site = request.headers.get("sec-fetch-site");
+  if (
+    (origin && origin !== `http://${host}`) ||
+    (site && !["same-origin", "none"].includes(site))
+  )
+    throw new Error("Same-origin requests are required");
   if (mutation) {
     if (request.headers.get("origin") !== `http://${host}`)
       throw new Error("Same-origin requests are required");

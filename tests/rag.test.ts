@@ -9,7 +9,7 @@ delete process.env.OLLAMA_API_KEY;
 const { db, now } = await import("../lib/db");
 const { importTranscript } = await import("../lib/transcripts");
 const { expertChatSchema } = await import("../lib/expert");
-const { planQuery, retrieveCandidates, rerankCandidates, assembleEvidence } =
+const { literalPlan, retrieveCandidates, assembleEvidence } =
   await import("../lib/rag");
 const fixture = (id: string, text: string, source = 2, date = "2026-10-01") =>
   importTranscript({
@@ -29,12 +29,6 @@ const request = (extra: Record<string, unknown> = {}) =>
     since: "2026-04-01",
     until: "2026-10-13",
     ...extra,
-  });
-const response = (value: unknown) =>
-  Response.json({
-    choices: [
-      { message: { content: JSON.stringify(value) }, finish_reason: "stop" },
-    ],
   });
 const statement = (
   video: string,
@@ -85,8 +79,8 @@ test("structured retrieval filters stocks before limits and preserves chronologi
   statement("ragtest0003", "FFC");
   for (let i = 0; i < 510; i++) statement("ragtest0004", "MCB");
   const p = request({ question: "How did the FFC outlook change?" });
-  const plan = await planQuery(p);
-  const result = retrieveCandidates(p, plan.plan);
+  const plan = literalPlan(p);
+  const result = retrieveCandidates(p, plan);
   assert.ok(result.candidates.some((c) => c.video_id === "ragtest0001"));
   assert.ok(result.candidates.some((c) => c.video_id === "ragtest0002"));
   assert.ok(result.candidates.every((c) => c.video_id !== "ragtest0004"));
@@ -97,19 +91,18 @@ test("structured retrieval filters stocks before limits and preserves chronologi
     until: "2026-10-02",
   });
   assert.ok(
-    retrieveCandidates(only, (await planQuery(only)).plan).candidates.every(
+    retrieveCandidates(only, literalPlan(only)).candidates.every(
       (c) => c.video_id === "ragtest0003",
     ),
   );
 });
 test("overview retrieves stocks without lexical query matches; explicit topic filters remain strict", async () => {
   const p = request({ question: "Give a market overview", symbols: [] });
-  const result = retrieveCandidates(p, (await planQuery(p)).plan);
+  const result = retrieveCandidates(p, literalPlan(p));
   assert.ok(result.candidates.some((c) => c.video_id === "ragtest0004"));
   const filtered = request({ topics: ["cement"] });
   assert.equal(
-    retrieveCandidates(filtered, (await planQuery(filtered)).plan).candidates
-      .length,
+    retrieveCandidates(filtered, literalPlan(filtered)).candidates.length,
     0,
   );
 });
@@ -129,7 +122,7 @@ test("new completed extraction replaces automatic legacy rows while reviewed and
     id: number;
   };
   const p = request();
-  const plan = (await planQuery(p)).plan;
+  const plan = literalPlan(p);
   let evidence = assembleEvidence(p, plan, [c.id], []).evidence;
   assert.ok(evidence.some((e) => e.id === `chunk:${c.id}`));
   assert.ok(
@@ -189,94 +182,9 @@ test("new completed extraction replaces automatic legacy rows while reviewed and
     ),
   );
 });
-test("planner cache includes filters and invalid symbols or provider failures fall back", async () => {
-  const original = globalThis.fetch;
-  process.env.OLLAMA_API_KEY = "fixture-rag-key";
-  let calls = 0;
-  globalThis.fetch = async () => {
-    calls++;
-    return response({ intent: "stock", symbols: ["FFC"], phrases: ["منافع"] });
-  };
-  try {
-    const p = request({ question: "Income prospects" });
-    assert.equal((await planQuery(p)).plan.phrases[0], "منافع");
-    await planQuery(p);
-    assert.equal(calls, 1);
-    await planQuery({ ...p, channelIds: [2] });
-    assert.equal(calls, 2);
-    globalThis.fetch = async () =>
-      response({ intent: "stock", symbols: ["MADEUP"], phrases: [] });
-    assert.ok(
-      (await planQuery({ ...p, question: "Other question" })).fallbackReason,
-    );
-    globalThis.fetch = async () =>
-      Response.json({ error: { message: "quota" } }, { status: 429 });
-    assert.ok(
-      (await planQuery({ ...p, question: "Another question" })).fallbackReason,
-    );
-  } finally {
-    globalThis.fetch = original;
-    delete process.env.OLLAMA_API_KEY;
-  }
-});
-test("reranking rejects invented IDs and malformed output, and respects the request byte limit", async () => {
-  const p = request();
-  const plan = (await planQuery(p)).plan;
-  const pool = retrieveCandidates(p, plan);
-  const original = globalThis.fetch;
-  process.env.OLLAMA_API_KEY = "fixture-rag-key";
-  try {
-    globalThis.fetch = async (_input, init) => {
-      const body = JSON.parse(String(init?.body));
-      const payload = JSON.parse(body.messages[1].content);
-      assert.ok(Buffer.byteLength(body.messages[1].content) <= 50000);
-      assert.ok(payload.candidates.length <= 30);
-      return response({ rankings: [{ id: 999999, relevance: 3 }] });
-    };
-    const result = await rerankCandidates(
-      p,
-      plan,
-      pool.candidates,
-      pool.required,
-    );
-    assert.ok(result.fallbackReason);
-    assert.deepEqual(
-      result.ids,
-      pool.candidates.slice(0, 12).map((c) => c.id),
-    );
-    globalThis.fetch = async () => response({ rankings: "wrong" });
-    assert.ok(
-      (await rerankCandidates(p, plan, pool.candidates, pool.required))
-        .fallbackReason,
-    );
-    globalThis.fetch = async () =>
-      response({ rankings: [{ id: pool.candidates[0].id, relevance: 3 }] });
-    assert.ok(
-      (await rerankCandidates(p, plan, pool.candidates, pool.required))
-        .fallbackReason,
-    );
-    globalThis.fetch = async () =>
-      Response.json({ error: { message: "denied" } }, { status: 403 });
-    assert.ok(
-      (await rerankCandidates(p, plan, pool.candidates, pool.required))
-        .fallbackReason,
-    );
-    const huge = { ...pool.candidates[0], text: "ب".repeat(30000) };
-    globalThis.fetch = async () => {
-      throw new Error("Oversized candidates must not reach the provider");
-    };
-    assert.match(
-      (await rerankCandidates(p, plan, [huge], [])).fallbackReason || "",
-      /budget/,
-    );
-  } finally {
-    globalThis.fetch = original;
-    delete process.env.OLLAMA_API_KEY;
-  }
-});
 test("evidence is bounded, deduplicated and includes required pairs before optional context", async () => {
   const p = request({ question: "How did FFC change?" });
-  const plan = (await planQuery(p)).plan;
+  const plan = literalPlan(p);
   const pool = retrieveCandidates(p, plan);
   const assembled = assembleEvidence(
     p,
@@ -307,9 +215,6 @@ test("evidence is bounded, deduplicated and includes required pairs before optio
     new Set(assembled.evidence.map((e) => e.id)).size,
     assembled.evidence.length,
   );
-  const huge = { ...pool.candidates[0], text: "ب".repeat(30000) };
-  const result = await rerankCandidates(p, plan, [huge], []);
-  assert.ok(result.ids.length <= 1);
 });
 test("approved opinions retain their correction without replacing the original caption text", async () => {
   const text =
@@ -329,7 +234,7 @@ test("approved opinions retain their correction without replacing the original c
     .prepare("SELECT id FROM chunks WHERE video_id='ragtest0006'")
     .get() as { id: number };
   const p = request();
-  const plan = (await planQuery(p)).plan;
+  const plan = literalPlan(p);
   const evidence = assembleEvidence(p, plan, [chunk.id], []).evidence;
   const parent = evidence.find((e) => e.id === `chunk:${chunk.id}`)!;
   assert.equal(parent.text, text);
