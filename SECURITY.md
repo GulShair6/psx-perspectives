@@ -18,4 +18,4 @@ Keep `.env`, `.env.local`, SQLite files, backups, and private research out of ve
 
 The code license does not grant rights to redistribute YouTube captions, channel content, or PSX data. Public releases should contain source and synthetic fixtures only.
 
-The optional Python model stack has a separate dependency boundary. A clean npm audit does not certify those packages or pinned model code. Review [current local-runtime findings](docs/local-runtime-security.md) before installing or enabling that experimental stack. Dependabot monitors its pip requirements separately; model weights are never included in the source release.
+Local model translation has been removed. The current application does not install or launch Python model dependencies. Older checkouts and previously installed model environments retain their own security risks; stop old processes before upgrading and remove unused environments manually after backup. Publishing the source does not require distributing installed weights or private translation records.

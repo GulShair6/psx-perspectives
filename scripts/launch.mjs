@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { existsSync, readFileSync, rmSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 const production = process.argv.includes("--production");
 const env = [".env", ".env.local"]
@@ -23,52 +23,12 @@ const children = [
     { stdio: "inherit" },
   ),
 ];
-const localPython = resolve("data/local-translation/venv/bin/python");
-let localRuntime;
-if (
-  existsSync(localPython) &&
-  existsSync("data/local-translation/installed.json")
-) {
-  const localEnv = { ...process.env };
-  for (const key of Object.keys(localEnv))
-    if (/KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL/i.test(key)) delete localEnv[key];
-  localRuntime = spawn(localPython, [resolve("local_translation/runtime.py")], {
-    stdio: ["ignore", "ignore", "inherit"],
-    env: localEnv,
-  });
-  localRuntime.on("error", () =>
-    console.error(
-      "Local translation runtime could not start; saved captions remain available.",
-    ),
-  );
-  localRuntime.on("exit", () => {
-    const directory =
-      process.env.PSX_LOCAL_TRANSLATION_DIR || "data/local-translation";
-    try {
-      const state = JSON.parse(
-        readFileSync(resolve(directory, "runtime.json"), "utf8"),
-      );
-      if (state.pid === localRuntime.pid) {
-        rmSync(resolve(directory, "runtime.json"), { force: true });
-        rmSync(resolve(directory, "runtime.sock"), { force: true });
-      }
-    } catch {
-      /* The runtime may already have cleaned up. */
-    }
-    if (!closing)
-      console.error(
-        "Local translation runtime stopped; restart it to translate. Saved captions remain available.",
-      );
-  });
-}
 let closing = false;
 function stop(code = 0) {
   if (closing) return;
   closing = true;
-  localRuntime?.kill("SIGTERM");
   for (const child of children) child.kill("SIGTERM");
   setTimeout(() => {
-    localRuntime?.kill("SIGKILL");
     for (const child of children) child.kill("SIGKILL");
     process.exit(code);
   }, 6000).unref();

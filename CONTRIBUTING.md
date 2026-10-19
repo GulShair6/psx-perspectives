@@ -36,8 +36,6 @@ npm audit --audit-level=high
 
 `npm run proof` and `npm run refresh` contact live services. They are optional manual checks and must not be made prerequisites for an ordinary contribution. Tests must be deterministic and must not require paid services.
 
-For local Python runtime changes, also run `python3.11 -m unittest discover -s local_translation -p 'test_*.py'`. These tests use synthetic text, temporary environments and local sockets; model weights and provider credentials are unnecessary. CI runs them on Python 3.11. Installing the full translation stack and assessing real model outputs are separate checks.
-
 ## Review expectations
 
 Explain the user-visible problem, the change, and the checks you ran. Include before/after screenshots for interface changes and inspect narrow screens, keyboard focus, loading, empty, and error states. State any checks you could not run.

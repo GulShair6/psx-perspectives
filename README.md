@@ -72,41 +72,15 @@ Company observations can be included in expert answers through the combined evid
 
 ### Read a translation
 
-Open a transcript, a transcript citation, or **Review / correct statement**, then choose **Translate to Urdu** or **Translate to English**. The buttons use saved text and local IndicTrans2 models. No YouTube or cloud translation is requested automatically. The transcript reader prepares its current page first; **Prepare full transcript** explicitly prepares the rest. Citation and review readers translate the relevant source chunks, including surrounding context. Results stay beside the original on desktop and underneath on mobile, with Urdu right-to-left text and source timestamp links. Closing a reader lets queued work continue. Retry resumes only missing blocks.
+Open a transcript, citation, or **Review / correct statement**, then select **Translate to Urdu** or **Translate to English**. Language selection makes no external request. Choose **Try YouTube captions** or **Use Ollama Cloud** explicitly. There is no automatic provider fallback.
 
-Local output is **provisional** until separately compared with audio. Urdu becomes the preferred reading view only after thirty audio-checked passages across at least three channels pass names, units, negation and meaning checks. Numeric tokens must also retain exactly their original notation. These structural checks cannot certify linguistic or financial accuracy. Roman Urdu and Punjabi Shahmukhi are unsupported locally; mixed Indic scripts need correction or explicit fallback. Script detection tolerates Hindi-labelled Urdu/Hindustani; language metadata is a hint, not an absolute restriction.
+YouTube may retrieve a full target-language track. Creator captions take precedence over automatic captions and auto-translation. Cues keep their own timestamps and appear only where they overlap the displayed original; untimed passages cannot be aligned. Number differences produce a warning without changing the caption text. Blocking responses start a shared persisted twenty-four-hour cooldown. Original saved evidence stays readable.
 
-**Try YouTube captions** is optional and may download a complete target-language track, even for one passage. Creator captions take precedence over automatic captions and auto-translation. YouTube cues keep their own timestamps and are shown only where they overlap the displayed original. Untimed passages cannot be aligned. Number differences are warned about without altering the YouTube text. Blocking responses start a shared persisted twenty-four-hour cooldown across caption ingestion and language requests. Saved text remains readable throughout.
+Ollama translates saved text and reuses saved results before spending quota for missing segments. Only selecting this provider sends the source text, title and language hint for cloud translation. Failed jobs can be retried without replacing completed segments. All translated output is labeled with its source and remains unreviewed; confirm the original caption or audio before relying on it. Urdu is displayed right-to-left beside the original.
 
-**Use Ollama Cloud** is an explicit fallback after a local or YouTube failure. It reuses saved Ollama results before spending quota for missing text. Only this choice sends saved text, title and language hint for cloud translation. Source labels distinguish local output, reused Ollama output, creator captions, automatic captions and YouTube auto-translation. All remain separate from independent accuracy reviews. Confirm the original caption or audio before submitting a review reference.
+Local model translation has been removed. No Python environment or model downloads are required. Existing local translation records and human reviews remain stored for preservation, but are not displayed or searched. Pending local translation jobs are retired during upgrade. After stopping the previous application and worker and taking a backup, you may manually remove the unused `data/local-translation/` directory (or your former `PSX_LOCAL_TRANSLATION_DIR`); the application never deletes it automatically.
 
-### Install and evaluate local models
-
-Use Python 3.11 and at least **8 GiB free disk** for setup headroom. The three official [IndicTrans2 distilled models](https://github.com/AI4Bharat/IndicTrans2) require you to accept their Hugging Face access conditions yourself. Configure `HF_TOKEN` locally for the download; never paste it in chat or commit it. Model revisions and direct runtime dependencies are pinned under `local_translation/`; the Python environment and weights stay in ignored `data/local-translation/`.
-
-The optional model stack remains experimental. Its remaining PyTorch and Transformers advisories require review before release; the npm dependency audit does not cover them. See [local-runtime security status](docs/local-runtime-security.md). Runtime startup checks the installed direct dependencies against their pins. Translation caches and quality/capacity reports are tied to the pinned models, declared dependency versions and processing version; changing a pin requires setup and fresh validation. Older translations remain stored but cannot satisfy current requests or retrieval.
-
-```sh
-python3.11 local_translation/setup.py
-npm start
-npx tsx scripts/local-translation-check.ts status
-```
-
-The launcher starts the installed runtime using a private Unix socket. It keeps one CPU model loaded, runs inference sequentially with two CPU threads, disables Hugging Face networking/telemetry and outgoing socket connections, and never truncates tokenized input. Long chunks are split at sentence/word boundaries, with bounded splitting when necessary. Missing models or a stopped runtime produce a readable status; cached results still work. Setup downloads are online; inference is offline. Live dependency installation and offline model execution remain unverified until model access and disk space are supplied.
-
-Reading jobs take priority. English preparation for newly saved videos follows, without cloud reanalysis. Archive preparation for enabled channels runs only after independent English quality review, the twenty-question retrieval evaluation (at least eighteen passes), and a same-machine capacity report. Failed background blocks need explicit retry. Archive processing stays gated while any report is missing. The capacity gate requires projected English processing for ten typical videos within eight hours, peak runtime memory under 4 GiB and app responses under one second during inference; these are conservative initial thresholds to verify on this machine.
-
-```sh
-npx tsx scripts/local-translation-check.ts sample
-npx tsx scripts/local-translation-check.ts benchmark
-# Human reviews audio and fills reviews in data/local-translation/trial.json.
-npx tsx scripts/local-translation-check.ts import-reviews
-npx tsx scripts/local-translation-check.ts retrieval
-```
-
-The sample contains thirty real, timestamp-linked passages across channels, prioritizing figures, negation and conditions. A human must confirm genuine Hindi versus Hindi-labelled Urdu, code mixing and names against audio. Each `reviews.ur` / `reviews.en` entry needs `reviewer`, `audioChecked: true`, a `sourceKind` (`hindustani`, `hindi`, `english` or `punjabi`), a `cases` list (`code-mixing`, `company-names`, `financial-figures`, `negation`, `conditional` where present), and boolean `names`, `units`, `negation`, `meaning` fields; do not fill these automatically. Benchmarking saves cold/warm timings, peak memory and projected daily throughput, along with outputs for human review. The retrieval command reuses `tests/expert-research-questions.json`, makes no synthesis calls, and writes original citations to `retrieval-trial.json`; independently label all twenty entries and save the completed report as `retrieval-reviews.json` alongside it. Reports are tied to the model/processing version; translation reviews are also tied to source hashes.
-
-English derived text has a separate SQLite search index linked to original chunks. It never creates independent expert evidence or changes source text, citation timing, extraction checkpoints or review scores. Supported Urdu questions are translated locally and cached; unavailable local translation falls back to literal text and stock aliases. The standard question path uses local ranking, **at most one cloud synthesis request**, and no cloud planner, reranker or answer repair. A rejected answer returns saved evidence. Validated answers are cached against question, filters and evidence/source/review/translation versions. Results show whether a saved answer was reused and how many cloud requests were made.
+Research searches original questions and transcripts using lexical matches, stock aliases and structured evidence. Questions are not automatically translated. Removing derived English search may reduce cross-language recall. The standard research path makes at most one cloud synthesis request, with no cloud planner, reranker or answer repair. Validated answers are cached against the question, filters, original evidence and review versions.
 
 TXT/SRT/VTT imports remain the caption recovery path. Audio acquisition/transcription, training, translation editing, unofficial free translation websites and additional providers are outside this version.
 
@@ -114,7 +88,7 @@ TXT/SRT/VTT imports remain the caption recovery path. Audio acquisition/transcri
 
 The Next.js/React interface talks to a localhost-only API. SQLite stores original caption segments, searchable chunks, company snapshots, review decisions, and resumable job checkpoints. A sequential worker discovers videos, retrieves available captions, indexes transcripts, and queues cloud analysis.
 
-Retrieval scopes SQLite full-text search and stock/topic relationships to your filters before deterministic ranking. Local English translations extend search when available. Selected original evidence feeds at most one cloud synthesis request; there is no cloud planner, reranker or correction request. Invalid synthesis returns saved evidence and an explanation. Urdu reading preparation does not invalidate an unchanged saved answer.
+Retrieval scopes SQLite full-text search and stock/topic relationships to your filters before deterministic ranking. Selected original evidence feeds at most one cloud synthesis request; there is no cloud planner, reranker or correction request. Invalid synthesis returns saved evidence and an explanation. Urdu reading preparation does not invalidate an unchanged saved answer.
 
 This is lexical and structured retrieval, without embeddings, a vector database, or GraphRAG. The broader stock-symbol catalog is separate from the ten-company fundamentals dashboard.
 
@@ -134,7 +108,6 @@ The source is organized into `app/` (interface and API), `lib/` (collection, ret
 ```sh
 npm test
 npm run typecheck
-python3 -m unittest discover -s local_translation -p 'test_*.py'
 npm run build
 npx playwright install chromium
 npm run test:browser
@@ -152,9 +125,7 @@ Repairs quarantine invalid automatic statements and pending legacy opinions, ret
 
 Corrupted imports can be rebuilt only when a retained import job contains the exact original file text and the video has no human decisions, including translation reviews. Replaced records are archived in the report and backup. Missing raw input requires the original TXT/SRT/VTT file; the repair never guesses missing words or figures. Repaired sources receive a new hash and a failed analysis marker requiring explicit resume; repair itself makes no cloud requests or automatic reanalysis jobs.
 
-Processing version `local-2` isolates token-length probes from entity restoration. Earlier local translations and reviews remain stored but cannot satisfy current reading/search or quality gates. The English derived index is cleared by the additive upgrade and filled only by current validated results. Model revisions are unchanged. Live model inference, financial-language accuracy and throughput remain pending; Urdu stays provisional and archive preparation remains gated.
-
-A restarting worker waits up to 35 seconds for the previous lease to expire. A healthy local runtime publishes a private readiness heartbeat even while inference is busy. A dead process or expired heartbeat is unavailable; saved translations remain readable and no cloud fallback happens automatically. Restart the app to restart its optional local runtime.
+A restarting worker waits up to 35 seconds for the previous lease to expire. Saved translations and original evidence remain readable when a provider is unavailable; no cloud fallback happens automatically.
 
 `npm run proof` is an optional live PSX/feed/caption smoke check. `npm run refresh` retrieves official observations and updates your database. Both depend on external services and are separate from deterministic tests.
 
@@ -178,7 +149,7 @@ To restore, stop the website and worker, copy the backup to a clean database loc
 
 ## Contributing and licensing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup, checks, and review expectations. Pull requests run formatting, strict TypeScript checks, isolated Node/Python tests, a production build, npm dependency auditing, and browser/accessibility checks without provider credentials. Weekly Dependabot updates cover npm dependencies, optional Python requirements and GitHub Actions.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup, checks, and review expectations. Pull requests run formatting, strict TypeScript checks, isolated Node tests, a production build, npm dependency auditing, and browser/accessibility checks without provider credentials. Weekly Dependabot updates cover npm dependencies and GitHub Actions.
 
 Maintainers can follow [RELEASING.md](RELEASING.md) for verification, backups, GitHub protections, and publication steps.
 

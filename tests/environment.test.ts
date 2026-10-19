@@ -26,6 +26,14 @@ test("launcher loads .env then .env.local for both processes, preserving inherit
       'const fs=require("node:fs");console.log("ENV_CHECK:"+process.env.PSX_ENV_TEST);fs.writeFileSync("ready-"+process.pid,"");const t=setInterval(()=>{if(fs.readdirSync(".").filter(x=>x.startsWith("ready-")).length===2){clearInterval(t);setTimeout(()=>{},200);}},50);';
     writeFileSync(join(root, "node_modules/next/dist/bin/next"), fixture);
     writeFileSync(join(root, "scripts/worker.ts"), fixture);
+    const formerRuntime = join(root, "data/local-translation");
+    mkdirSync(join(formerRuntime, "venv/bin"), { recursive: true });
+    writeFileSync(join(formerRuntime, "installed.json"), "{}");
+    writeFileSync(
+      join(formerRuntime, "venv/bin/python"),
+      "#!/bin/sh\nprintf launched > python-launched\n",
+      { mode: 0o755 },
+    );
     writeFileSync(join(root, ".env"), "PSX_ENV_TEST=base\n");
     writeFileSync(join(root, ".env.local"), "PSX_ENV_TEST=local\n");
     for (const inherited of [undefined, "inherited"]) {
@@ -43,6 +51,10 @@ test("launcher loads .env then .env.local for both processes, preserving inherit
         timeout: 15000,
       });
       assert.equal(r.status, 0, r.stderr);
+      assert.ok(
+        !readdirSync(root).includes("python-launched"),
+        "Retired installed models must not be launched",
+      );
       assert.deepEqual(r.stdout.trim().split("\n"), [
         `ENV_CHECK:${inherited || "local"}`,
         `ENV_CHECK:${inherited || "local"}`,

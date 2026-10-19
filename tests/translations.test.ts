@@ -79,6 +79,14 @@ test.after(() => {
   rmSync(temp, { recursive: true, force: true });
 });
 
+test("translation requests require an explicit supported provider", () => {
+  const missing = { videoId: "trans000001", target: "ur" };
+  for (const request of [missing, { ...missing, method: "local" }]) {
+    assert.throws(() => getTranslations(request), /method|option/i);
+    assert.throws(() => queueTranslation(request), /method|option/i);
+  }
+});
+
 test("requests validate saved source scope and reuse identical queued jobs", () => {
   const ids = fixture("trans000001"),
     other = fixture("trans000002");
@@ -438,6 +446,24 @@ test("translation API enforces localhost, same-origin JSON and exact source scop
     (await post({ ...input("trans000003"), target: "fr" })).status,
     400,
   );
+  for (const method of [undefined, "local"]) {
+    const body = {
+      videoId: "trans000003",
+      target: "ur",
+      ...(method ? { method } : {}),
+    };
+    assert.equal((await post(body)).status, 400);
+    const query = `http://127.0.0.1:3000/api/translations?videoId=trans000003&target=ur${method ? `&method=${method}` : ""}`;
+    assert.equal(
+      (
+        await GET(
+          new NextRequest(query, { headers: { host: "127.0.0.1:3000" } }),
+          params,
+        )
+      ).status,
+      400,
+    );
+  }
   const foreign = (
     db
       .prepare("SELECT id FROM caption_segments WHERE video_id='trans000001'")

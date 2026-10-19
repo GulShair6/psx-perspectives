@@ -8,7 +8,6 @@ import {
   windowBounds,
 } from "./knowledge";
 import { activeStatementSql } from "./evidence";
-import { LOCAL_REVISION, LOCAL_VERSION } from "./local-runtime";
 import type { Chunk, ExpertRequest, ExpertEvidence } from "./expert";
 const planSchema = z
   .object({
@@ -67,7 +66,6 @@ function overlapping(a: Chunk, b: Chunk) {
       0.8
   );
 }
-const translatedMatch = `EXISTS(SELECT 1 FROM english_translation_search JOIN local_translation_blocks b ON b.chunk_id=english_translation_search.rowid WHERE b.chunk_id=c.id AND b.transcript_hash=v.content_hash AND b.target='en' AND b.revision='${LOCAL_REVISION}' AND b.version='${LOCAL_VERSION}' AND english_translation_search MATCH ?)`;
 function scoped(p: ExpertRequest, plan: QueryPlan) {
   const [start, end] = windowBounds(p.since, p.until);
   const args: unknown[] = [...p.channelIds, start, end];
@@ -79,12 +77,12 @@ function scoped(p: ExpertRequest, plan: QueryPlan) {
         ? [symbol, stock.name, ...JSON.parse(stock.aliases)]
         : [symbol];
     });
-    where += ` AND (EXISTS(SELECT 1 FROM chunk_search WHERE rowid=c.id AND chunk_search MATCH ?) OR ${translatedMatch} OR EXISTS(SELECT 1 FROM statements st JOIN statement_stocks ss ON ss.statement_id=st.id WHERE st.chunk_id=c.id AND ${activeStatementSql} AND ss.symbol IN (${plan.symbols.map(() => "?").join(",")})))`;
-    args.push(quoted(aliases), quoted(aliases), ...plan.symbols);
+    where += ` AND (EXISTS(SELECT 1 FROM chunk_search WHERE rowid=c.id AND chunk_search MATCH ?) OR EXISTS(SELECT 1 FROM statements st JOIN statement_stocks ss ON ss.statement_id=st.id WHERE st.chunk_id=c.id AND ${activeStatementSql} AND ss.symbol IN (${plan.symbols.map(() => "?").join(",")})))`;
+    args.push(quoted(aliases), ...plan.symbols);
   }
   if (p.topics.length) {
-    where += ` AND (EXISTS(SELECT 1 FROM chunk_search WHERE rowid=c.id AND chunk_search MATCH ?) OR ${translatedMatch} OR EXISTS(SELECT 1 FROM statements st JOIN statement_topics t ON t.statement_id=st.id WHERE st.chunk_id=c.id AND ${activeStatementSql} AND t.topic IN (${p.topics.map(() => "?").join(",")})))`;
-    args.push(quoted(p.topics), quoted(p.topics), ...p.topics.map(normalize));
+    where += ` AND (EXISTS(SELECT 1 FROM chunk_search WHERE rowid=c.id AND chunk_search MATCH ?) OR EXISTS(SELECT 1 FROM statements st JOIN statement_topics t ON t.statement_id=st.id WHERE st.chunk_id=c.id AND ${activeStatementSql} AND t.topic IN (${p.topics.map(() => "?").join(",")})))`;
+    args.push(quoted(p.topics), ...p.topics.map(normalize));
   }
   return { where, args };
 }
@@ -121,13 +119,6 @@ export function retrieveCandidates(p: ExpertRequest, plan: QueryPlan) {
         )
         .all(...args, match) as Chunk[])
     : [];
-  const translated = match
-    ? (db
-        .prepare(
-          `${selectChunks} JOIN english_translation_search ON english_translation_search.rowid=c.id WHERE ${where} AND ${translatedMatch} ORDER BY bm25(english_translation_search),v.published_at DESC,c.id LIMIT 81`,
-        )
-        .all(...args, match) as Chunk[])
-    : [];
   const structured = db
     .prepare(
       `${selectChunks} WHERE ${where} AND EXISTS(SELECT 1 FROM statements st WHERE st.chunk_id=c.id AND ${activeStatementSql}) ORDER BY v.published_at DESC,c.id LIMIT 81`,
@@ -156,7 +147,7 @@ export function retrieveCandidates(p: ExpertRequest, plan: QueryPlan) {
     for (const symbol of plan.symbols.length ? plan.symbols : [null]) {
       for (const source of p.channelIds) {
         const extra = symbol
-          ? ` AND (EXISTS(SELECT 1 FROM chunk_search WHERE rowid=c.id AND chunk_search MATCH ?) OR ${translatedMatch})`
+          ? ` AND (EXISTS(SELECT 1 FROM chunk_search WHERE rowid=c.id AND chunk_search MATCH ?))`
           : "";
         const stock = catalog().find((s) => s.symbol === symbol);
         const stockMatch = symbol
@@ -174,11 +165,8 @@ export function retrieveCandidates(p: ExpertRequest, plan: QueryPlan) {
             .prepare(
               `${selectChunks} WHERE ${where} AND v.source_id=? ${extra} ORDER BY v.published_at ${direction},c.ordinal LIMIT 1`,
             )
-            .get(
-              ...args,
-              source,
-              ...(stockMatch ? [stockMatch, stockMatch] : []),
-            ) as Chunk | undefined;
+            .get(...args, source, ...(stockMatch ? [stockMatch] : [])) as
+            Chunk | undefined;
           if (row) pair.push(row);
         }
         if (
@@ -198,7 +186,7 @@ export function retrieveCandidates(p: ExpertRequest, plan: QueryPlan) {
       score: number;
     }
   >();
-  for (const list of [lexical, translated, structured, seeds])
+  for (const list of [lexical, structured, seeds])
     list.forEach((row, i) => {
       const old = scores.get(row.id);
       scores.set(row.id, { row, score: (old?.score || 0) + 1 / (60 + i + 1) });
@@ -224,7 +212,6 @@ export function retrieveCandidates(p: ExpertRequest, plan: QueryPlan) {
     rows.length > 80 ||
     allRequired.length > 12 ||
     lexical.length > 80 ||
-    translated.length > 80 ||
     structured.length > 80;
   const seen: Chunk[] = [];
   rows = rows.slice(0, 80).filter((c) => {

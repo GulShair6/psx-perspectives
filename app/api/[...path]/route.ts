@@ -488,6 +488,8 @@ export async function POST(
         .prepare("SELECT type,payload FROM jobs WHERE id=? AND status='failed'")
         .get(p.id) as { type: string; payload: string } | undefined;
       if (!old) throw new Error("Failed job not found");
+      if (old.type === "local_translate")
+        throw new Error("Local model translation has been removed.");
       const payload = JSON.parse(old.payload);
       return response(
         {

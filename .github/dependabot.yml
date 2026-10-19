@@ -12,8 +12,3 @@ updates:
     directory: /
     schedule:
       interval: weekly
-  - package-ecosystem: pip
-    directory: /local_translation
-    schedule:
-      interval: weekly
-    open-pull-requests-limit: 5

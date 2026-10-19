@@ -211,6 +211,7 @@ try {
   });
   const page = await context.newPage();
   // Translation UI fixtures stay inside the disposable test app; no cloud keys are loaded.
+  let translationRequests = 0;
   let translationPosts = 0,
     failTranslation = false,
     translationAvailable = true,
@@ -252,6 +253,7 @@ try {
     }
   >();
   await page.route("**/api/translations**", async (route) => {
+    translationRequests++;
     const request = route.request(),
       query = new URL(request.url()).searchParams;
     const p =
@@ -259,14 +261,13 @@ try {
         ? (request.postDataJSON() as {
             videoId: string;
             target: string;
-            method?: "local" | "youtube" | "ollama";
+            method: "youtube" | "ollama";
             segmentIds?: number[];
           })
         : {
             videoId: query.get("videoId")!,
             target: query.get("target")!,
-            method: (query.get("method") || "local") as
-              "local" | "youtube" | "ollama",
+            method: query.get("method") as "youtube" | "ollama",
             ...(query.has("segmentIds")
               ? { segmentIds: query.get("segmentIds")!.split(",").map(Number) }
               : {}),
@@ -284,7 +285,7 @@ try {
     const ids = segments
       .filter((s) => !p.segmentIds || p.segmentIds.includes(s.id))
       .map((s) => s.id);
-    const method = p.method || "local";
+    const method = p.method;
     const key = JSON.stringify([
       p.videoId,
       p.target,
@@ -356,45 +357,6 @@ try {
     data.translations = (method !== "youtube" ? ids : [])
       .map((id) => translationCache.get(`${p.videoId}:${p.target}:${id}`))
       .filter(Boolean);
-    data.blocks =
-      method === "local"
-        ? (
-            db
-              .prepare(
-                "SELECT DISTINCT c.id,c.start_seconds,c.end_seconds FROM chunks c JOIN chunk_segments cs ON cs.chunk_id=c.id WHERE c.video_id=? AND cs.segment_id IN (SELECT value FROM json_each(?))",
-              )
-              .all(p.videoId, JSON.stringify(ids)) as {
-              id: number;
-              start_seconds: number;
-              end_seconds: number;
-            }[]
-          ).flatMap((c) => {
-            const mapped = (
-              db
-                .prepare(
-                  "SELECT segment_id FROM chunk_segments WHERE chunk_id=?",
-                )
-                .all(c.id) as { segment_id: number }[]
-            ).map((r) => r.segment_id);
-            const ready = mapped.map((id) =>
-              translationCache.get(`${p.videoId}:${p.target}:${id}`),
-            );
-            return ready.every(Boolean)
-              ? [
-                  {
-                    chunkId: c.id,
-                    segmentIds: mapped,
-                    text: ready.map((r) => r!.text).join(" "),
-                    provider: "local",
-                    createdAt: new Date().toISOString(),
-                    startSeconds: c.start_seconds,
-                    endSeconds: c.end_seconds,
-                  },
-                ]
-              : [];
-          })
-        : [];
-    data.quality = { validated: false, reviewed: 0, passed: 0, channels: 0 };
     data.complete =
       method === "youtube"
         ? !!data.captionTrack
@@ -409,9 +371,7 @@ try {
         ? null
         : method === "youtube"
           ? "YouTube caption retrieval is unavailable in this fixture."
-          : method === "local"
-            ? "Local runtime is unavailable in this fixture. Saved translations remain readable."
-            : "Set OLLAMA_API_KEY to generate translations. Saved translations remain readable.");
+          : "Set OLLAMA_API_KEY to generate translations. Saved translations remain readable.");
     data.job = job
       ? {
           id: 9000,
@@ -527,6 +487,11 @@ try {
     .getByRole("button", { name: "Translate to Urdu", exact: true })
     .focus();
   await page.keyboard.press("Enter");
+  expect(translationRequests).toBe(0);
+  await transcript
+    .getByRole("button", { name: "Use Ollama Cloud", exact: true })
+    .focus();
+  await page.keyboard.press("Enter");
   await page.keyboard.press("Escape");
   await expect.poll(() => translationPosts).toBe(1);
   await page
@@ -537,6 +502,9 @@ try {
     .getByRole("button", { name: "Translate to Urdu", exact: true })
     .click();
   expect(translationPosts).toBe(1);
+  await transcript
+    .getByRole("button", { name: "Use Ollama Cloud", exact: true })
+    .click();
   await expect(transcript.getByRole("status")).toContainText(
     /Queued for translation|Translating|Translation completed/,
   );
@@ -550,7 +518,7 @@ try {
   await expect(transcript).toContainText(
     "Do not buy based on this synthetic fixture.",
   );
-  await expect(transcript).toContainText("Provisional translation");
+  await expect(transcript).not.toContainText("Local AI translation");
   await transcript
     .getByRole("button", { name: "Try YouTube captions", exact: true })
     .click();
@@ -561,7 +529,7 @@ try {
   await expect(transcript).toContainText("Numbers or their formatting differ");
   await expect(transcript).toContainText("YouTube auto-translation");
   await expect(transcript).toContainText("0:12 → 0:16");
-  expect(ollamaPosts).toBe(0);
+  expect(ollamaPosts).toBe(1);
   await assertAccessible();
   await page.screenshot({
     path: "data/browser-artifacts/translation-desktop.png",
@@ -588,6 +556,9 @@ try {
     .getByRole("dialog")
     .getByRole("button", { name: "Translate to Urdu", exact: true })
     .click();
+  await transcript
+    .getByRole("button", { name: "Use Ollama Cloud", exact: true })
+    .click();
   await expect(page.getByRole("dialog").getByRole("status")).toContainText(
     "Translation completed",
   );
@@ -596,13 +567,16 @@ try {
     .getByRole("dialog")
     .getByRole("button", { name: "Translate to English", exact: true })
     .click();
+  const beforeProviderChoice = translationRequests;
+  await transcript
+    .getByRole("button", { name: "Use Ollama Cloud", exact: true })
+    .click();
+  expect(translationRequests).toBeGreaterThan(beforeProviderChoice);
   await expect(page.getByRole("dialog")).toContainText(
     "The ingestion worker is offline",
   );
-  await expect(page.getByRole("dialog")).toContainText(
-    "Local runtime is unavailable",
-  );
-  expect(ollamaPosts).toBe(0);
+  await expect(page.getByRole("dialog")).toContainText("Set OLLAMA_API_KEY");
+  expect(ollamaPosts).toBe(1);
   expect(translationPosts).toBe(savedPosts);
   translationAvailable = true;
   await page.keyboard.press("Escape");
@@ -618,8 +592,7 @@ try {
   await reviewDialog
     .getByRole("button", { name: "Translate to English", exact: true })
     .click();
-  await expect(reviewDialog).toContainText("Translation failed.");
-  failTranslation = true;
+  await expect(reviewDialog).not.toContainText("Translation failed.");
   await reviewDialog
     .getByRole("button", { name: "Try YouTube captions", exact: true })
     .click();
@@ -649,7 +622,7 @@ try {
     fullPage: false,
   });
   await page.setViewportSize({ width: 1440, height: 1050 });
-  expect(ollamaPosts).toBe(0);
+  expect(ollamaPosts).toBe(1);
   await expect(
     reviewDialog.getByRole("button", {
       name: "Retry YouTube captions",
@@ -663,14 +636,14 @@ try {
   await expect(
     reviewDialog.getByRole("button", { name: "Use Ollama Cloud", exact: true }),
   ).toBeVisible();
-  expect(ollamaPosts).toBe(0);
+  expect(ollamaPosts).toBe(1);
   await expect(reviewDialog).toContainText("uses cloud quota");
   failTranslation = true;
   await reviewDialog
     .getByRole("button", { name: "Use Ollama Cloud", exact: true })
     .click();
   await expect(reviewDialog).toContainText("Translation failed.");
-  expect(ollamaPosts).toBe(1);
+  expect(ollamaPosts).toBe(2);
   await reviewDialog
     .getByRole("button", { name: "Retry translation", exact: true })
     .click();
@@ -757,6 +730,9 @@ try {
   const beforeEvidencePosts = translationPosts;
   await evidenceTranslation
     .getByRole("button", { name: "Translate to Urdu", exact: true })
+    .click();
+  await evidenceTranslation
+    .getByRole("button", { name: "Use Ollama Cloud", exact: true })
     .click();
   await expect(evidenceTranslation.getByRole("status")).toContainText(
     "Translation completed",

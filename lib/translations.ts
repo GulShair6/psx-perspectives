@@ -3,7 +3,6 @@ import { z } from "zod";
 import { db, now, queue } from "./db";
 import { aiSettings, askJson } from "./ai";
 import { pauseOnQuota, pipeline } from "./expert";
-import { localScope, localState, queueLocal } from "./local-translations";
 import {
   youtubeCaptions,
   captionRetryAt,
@@ -16,7 +15,7 @@ export const translationSchema = z
   .object({
     videoId: z.string().regex(/^[-\w]{11}$/),
     target: z.enum(["ur", "en"]),
-    method: z.enum(["local", "youtube", "ollama"]).default("local"),
+    method: z.enum(["youtube", "ollama"]),
     segmentIds: z
       .array(z.number().int().positive())
       .min(1)
@@ -119,7 +118,7 @@ function latestJob(key: string): Job | null {
   return (
     (db
       .prepare(
-        "SELECT id,status,progress,error FROM jobs WHERE type IN ('translate','youtube_captions','local_translate') AND json_extract(payload,'$.key')=? ORDER BY id DESC LIMIT 1",
+        "SELECT id,status,progress,error FROM jobs WHERE type IN ('translate','youtube_captions') AND json_extract(payload,'$.key')=? ORDER BY id DESC LIMIT 1",
       )
       .get(key) as Job | undefined) || null
   );
@@ -133,10 +132,6 @@ function unavailableReason() {
 }
 export function getTranslations(input: unknown) {
   const s = scope(input);
-  const local =
-    s.method === "local"
-      ? localState(localScope(s.videoId, s.target, s.segmentIds))
-      : null;
   const translations = s.method === "ollama" ? saved(s) : [];
   const track = s.method === "youtube" ? savedCaptionTrack(s) : null;
   const cues =
@@ -150,17 +145,15 @@ export function getTranslations(input: unknown) {
       ),
     ) || [];
   const reason =
-    s.method === "local"
-      ? local?.unavailableReason || null
-      : s.method === "ollama"
-        ? unavailableReason()
-        : untimedReason(s) ||
-          (!track && captionRetryAt() > Date.now()
-            ? `YouTube caption requests are paused after blocking. Retry after ${new Date(captionRetryAt()).toLocaleString()}. Saved text and local translations remain available.`
-            : null) ||
-          (track && !cues.length
-            ? "YouTube captions do not overlap this saved passage. Use Ollama Cloud to translate the saved text."
-            : null);
+    s.method === "ollama"
+      ? unavailableReason()
+      : untimedReason(s) ||
+        (!track && captionRetryAt() > Date.now()
+          ? `YouTube caption requests are paused after blocking. Retry after ${new Date(captionRetryAt()).toLocaleString()}. Saved text remains available.`
+          : null) ||
+        (track && !cues.length
+          ? "YouTube captions do not overlap this saved passage. Use Ollama Cloud to translate the saved text."
+          : null);
   return {
     videoId: s.videoId,
     transcriptHash: s.transcriptHash,
@@ -168,21 +161,16 @@ export function getTranslations(input: unknown) {
     method: s.method,
     translations,
     captionTrack: track ? { ...track, cues } : null,
-    blocks: local?.blocks || [],
-    readiness: local?.readiness || null,
-    quality: local?.quality || null,
     numberWarning:
       !!track &&
       JSON.stringify(numbers(s.segments.map((row) => row.text).join(" "))) !==
         JSON.stringify(numbers(cues.map((row) => row.text).join(" "))),
-    total: local?.total ?? s.segments.length,
+    total: s.segments.length,
     complete:
-      s.method === "local"
-        ? !!local?.complete
-        : s.method === "youtube"
-          ? !!track && !reason
-          : translations.length === s.segments.length,
-    job: local?.job || (s.method === "local" ? null : latestJob(s.key)),
+      s.method === "youtube"
+        ? !!track && !reason
+        : translations.length === s.segments.length,
+    job: latestJob(s.key),
     available: !reason,
     unavailableReason: reason,
     workerOnline: !!db
@@ -195,15 +183,13 @@ export function queueTranslation(input: unknown): { job: number | null } {
   return db
     .transaction(() => {
       const s = scope(input);
-      if (s.method === "local")
-        return queueLocal(localScope(s.videoId, s.target, s.segmentIds));
       if (s.method === "youtube") {
         const reason = untimedReason(s);
         if (reason) throw new Error(reason);
         if (savedCaptionTrack(s)) return { job: null };
         if (captionRetryAt() > Date.now())
           throw new Error(
-            `YouTube captions are cooling down until ${new Date(captionRetryAt()).toISOString()}; use saved text or local translation.`,
+            `YouTube captions are cooling down until ${new Date(captionRetryAt()).toISOString()}; use saved text or explicitly choose Ollama Cloud.`,
           );
         const existing = latestJob(s.key);
         if (existing && ["queued", "running"].includes(existing.status))
@@ -293,8 +279,8 @@ export async function youtubeCaptionJob(
   const track = await youtubeCaptions(s.videoId, s.target, s.language);
   db.transaction(() => {
     if (
-      scope({ videoId: p.videoId, target: p.target }).transcriptHash !==
-      s.transcriptHash
+      scope({ videoId: p.videoId, target: p.target, method: "youtube" })
+        .transcriptHash !== s.transcriptHash
     )
       throw new Error(
         "Transcript changed while retrieving YouTube captions. Reopen it to retry.",
@@ -381,6 +367,7 @@ export async function translateJob(
 ) {
   const p = translationSchema
     .extend({
+      method: z.literal("ollama").default("ollama"),
       transcriptHash: z.string().min(1),
       version: z.literal(TRANSLATION_VERSION),
       key: z.string().length(64),
